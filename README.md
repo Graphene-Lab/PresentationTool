@@ -13,7 +13,7 @@ DocumentFormat.OpenXml.
 
 ## Usage
 
-Loads as a plugin (see [AGENT_TOOLS_GUIDE.md](https://github.com/Graphene-Lab/AIOrchestrator/blob/master/API/AGENT_TOOLS_GUIDE.md)):
+Loads as a plugin (see [AGENT_TOOLS_GUIDE.md](https://github.com/Graphene-Lab/AgentHarness/blob/master/API/AGENT_TOOLS_GUIDE.md)):
 drop the `dll` + `xml` into the host's `Tools/` folder, or let the host build it via its
 `BuildToolPlugins` target. The tool is auto-updatable from NuGet (`Graphene.PresentationPlugin`).
 
