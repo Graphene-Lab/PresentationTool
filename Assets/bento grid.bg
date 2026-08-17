@@ -1,0 +1,104 @@
+<!-- Bento Grid animated background: living bento tiles -->
+<style>
+    .bg-bento {
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        overflow: hidden;
+        pointer-events: none;
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        grid-template-rows: repeat(4, 1fr);
+        gap: 2.4vmin;
+        padding: 2.4vmin;
+        background: #eef1f6;
+    }
+    body.dark .bg-bento { background: #101420; }
+    .bg-bento .tile {
+        position: relative;
+        border-radius: 2.2vmin;
+        background: linear-gradient(135deg, rgba(255, 255, 255, .75), rgba(255, 255, 255, .35));
+        border: 1px solid rgba(255, 255, 255, .8);
+        box-shadow: 0 1.6vmin 3.2vmin rgba(40, 60, 120, .10);
+        animation: bgbento-bob 7s ease-in-out infinite alternate;
+        overflow: hidden;
+    }
+    body.dark .bg-bento .tile {
+        background: linear-gradient(135deg, rgba(255, 255, 255, .09), rgba(255, 255, 255, .03));
+        border-color: rgba(255, 255, 255, .12);
+        box-shadow: 0 1.6vmin 3.2vmin rgba(0, 0, 0, .35);
+    }
+    .bg-bento .tile::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(120deg, transparent 30%, rgba(255, 255, 255, .5) 50%, transparent 70%);
+        transform: translateX(-120%);
+        animation: bgbento-sweep 6s ease-in-out infinite;
+    }
+    @keyframes bgbento-bob {
+        from { transform: translateY(-1.2vmin) scale(1); }
+        to { transform: translateY(1.2vmin) scale(1.015); }
+    }
+    @keyframes bgbento-sweep { 0%, 60% { transform: translateX(-120%); } 85%, 100% { transform: translateX(120%); } }
+    .bg-bento .t1 { grid-area: 1 / 1 / 3 / 3; background-color: rgba(255, 170, 90, .85); }
+    .bg-bento .t2 { grid-area: 1 / 3 / 2 / 5; background-color: rgba(120, 180, 255, .8); }
+    .bg-bento .t3 { grid-area: 2 / 3 / 4 / 4; background-color: rgba(160, 220, 180, .8); }
+    .bg-bento .t4 { grid-area: 2 / 4 / 3 / 5; background-color: rgba(255, 220, 120, .85); }
+    .bg-bento .t5 { grid-area: 3 / 1 / 5 / 2; background-color: rgba(200, 160, 255, .8); }
+    .bg-bento .t6 { grid-area: 3 / 2 / 4 / 4; background-color: rgba(255, 150, 180, .8); }
+    .bg-bento .t7 { grid-area: 4 / 2 / 5 / 4; background-color: rgba(140, 210, 235, .8); }
+    .bg-bento .t8 { grid-area: 4 / 4 / 5 / 5; background-color: rgba(255, 255, 255, .85); }
+    body.dark .bg-bento .t1 { background-color: rgba(255, 150, 70, .35); }
+    body.dark .bg-bento .t2 { background-color: rgba(90, 150, 255, .32); }
+    body.dark .bg-bento .t3 { background-color: rgba(120, 200, 150, .30); }
+    body.dark .bg-bento .t4 { background-color: rgba(255, 200, 90, .32); }
+    body.dark .bg-bento .t5 { background-color: rgba(170, 130, 255, .32); }
+    body.dark .bg-bento .t6 { background-color: rgba(255, 120, 160, .32); }
+    body.dark .bg-bento .t7 { background-color: rgba(100, 190, 220, .30); }
+    body.dark .bg-bento .t8 { background-color: rgba(255, 255, 255, .10); }
+    .bg-bento .dot {
+        position: absolute;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, .9);
+        animation: bgbento-pulse 2.4s ease-in-out infinite;
+    }
+    body.dark .bg-bento .dot { background: rgba(255, 255, 255, .6); }
+    @keyframes bgbento-pulse { 0%, 100% { transform: scale(1); opacity: .9; } 50% { transform: scale(1.5); opacity: .4; } }
+    .bg-bento .bars { position: absolute; left: 10%; bottom: 12%; width: 80%; height: 26%; display: flex; align-items: flex-end; gap: 6%; }
+    .bg-bento .bars i {
+        flex: 1;
+        background: rgba(255, 255, 255, .75);
+        border-radius: 1vmin;
+        animation: bgbento-bar 3.2s ease-in-out infinite;
+    }
+    body.dark .bg-bento .bars i { background: rgba(255, 255, 255, .35); }
+    @keyframes bgbento-bar { 0%, 100% { height: 30%; } 50% { height: 100%; } }
+</style>
+<script>
+    (function () {
+        'use strict';
+        document.addEventListener('DOMContentLoaded', function () {
+            var reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+            var layer = document.createElement('div');
+            layer.className = 'bg-bento';
+            layer.innerHTML =
+                '<div class="tile t1"><div class="dot" style="left:18%;top:22%;width:1.6vmin;height:1.6vmin;animation-delay:.2s"></div>' +
+                '<div class="dot" style="left:38%;top:62%;width:1.2vmin;height:1.2vmin;animation-delay:.9s"></div>' +
+                '<div class="dot" style="left:70%;top:34%;width:1.9vmin;height:1.9vmin;animation-delay:1.5s"></div></div>' +
+                '<div class="tile t2"><div class="bars"><i style="animation-delay:0s"></i><i style="animation-delay:.3s"></i><i style="animation-delay:.6s"></i><i style="animation-delay:.9s"></i></div></div>' +
+                '<div class="tile t3"><div class="dot" style="left:40%;top:40%;width:2.2vmin;height:2.2vmin"></div></div>' +
+                '<div class="tile t4"></div>' +
+                '<div class="tile t5"><div class="bars"><i style="animation-delay:0s"></i><i style="animation-delay:.4s"></i><i style="animation-delay:.8s"></i></div></div>' +
+                '<div class="tile t6"><div class="dot" style="left:24%;top:28%;width:1.4vmin;height:1.4vmin;animation-delay:.4s"></div>' +
+                '<div class="dot" style="left:56%;top:60%;width:1.7vmin;height:1.7vmin;animation-delay:1.1s"></div></div>' +
+                '<div class="tile t7"><div class="bars"><i style="animation-delay:.1s"></i><i style="animation-delay:.5s"></i><i style="animation-delay:.9s"></i><i style="animation-delay:1.2s"></i></div></div>' +
+                '<div class="tile t8"></div>';
+            document.body.appendChild(layer);
+            if (reduced) {
+                var tiles = layer.querySelectorAll('.tile');
+                for (var i = 0; i < tiles.length; i++) tiles[i].style.animation = 'none';
+            }
+        });
+    })();
+</script>

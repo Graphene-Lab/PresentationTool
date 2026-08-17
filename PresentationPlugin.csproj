@@ -1,5 +1,4 @@
 <Project Sdk="Microsoft.NET.Sdk">
-
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <OutputType>Library</OutputType>
@@ -13,34 +12,59 @@
     <Configurations>Debug;Release;Test</Configurations>
     <PackageId>Graphene.PresentationPlugin</PackageId>
     <Version>$([System.DateTime]::Now.ToString("1.yy.MM.dd"))</Version>
-    <Description>PowerPoint (PPTX) presentation agent tool for AIOrchestrator: LLM-driven deck creation and fixing.</Description>
+    <Description>HTML presentation agent tool for AIOrchestrator: LLM-driven self-contained deck creation and fixing.</Description>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageLicenseFile>LICENSE.md</PackageLicenseFile>
     <PackageRequireLicenseAcceptance>False</PackageRequireLicenseAcceptance>
     <Copyright>Andrea Bruno</Copyright>
     <RepositoryUrl>https://github.com/Graphene-Lab/PresentationPlugin</RepositoryUrl>
-    <PackageTags>agent;tool;presentation;pptx;powerpoint;llm;automation</PackageTags>
+    <PackageTags>agent;tool;presentation;html;deck;llm;automation</PackageTags>
+    <DefaultItemExcludes>$(DefaultItemExcludes);PresentationPlugin.Harness\bin\**;PresentationPlugin.Harness\obj\**</DefaultItemExcludes>
   </PropertyGroup>
-
   <!-- Runtime plugin identity: AIOrchestrator.PluginUpdater reads these assembly metadata
        attributes to know which NuGet package and version a loaded plugin comes from. -->
   <ItemGroup>
     <AssemblyMetadata Include="NuGetPackageId" Value="Graphene.PresentationPlugin" />
     <AssemblyMetadata Include="NuGetPackageVersion" Value="$(Version)" />
   </ItemGroup>
-
   <!-- Dual-reference pattern (as in AIOrchestrator): the local sibling project wins when
        present (solution builds); otherwise the NuGet package (1.* floating = always latest)
-       is restored — required for CI/standalone builds where the sibling sources are absent. -->
+       is restored â€” required for CI/standalone builds where the sibling sources are absent. -->
   <ItemGroup>
     <ProjectReference Include="..\AIOrchestrator\AIOrchestrator.csproj" Condition="Exists('..\AIOrchestrator\AIOrchestrator.csproj')" />
   </ItemGroup>
   <ItemGroup>
+    <!-- Nested test projects must not compile into the library (AGENT_TOOLS_GUIDE Â§5). -->
+    <Compile Remove="PresentationPlugin.Harness\**\*.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Deck template shipped inside the plugin assembly (read at runtime via TemplateHtml). -->
+    <EmbeddedResource Include="Assets\template.html" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Style background blocks (one per deck style): copied into the output's assets/
+         folder next to the plugin assemblies (same convention as the runtime-read plugin
+         assets) and packed into lib/<tfm>/assets/ so PluginUpdater installs them with the
+         plugin. Runtime lookup follows the style: Path.Combine(AppContext.BaseDirectory,
+         "assets", "<style>.bg"). -->
+    <None Update="Assets\*.bg">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <TargetPath>assets/%(Filename)%(Extension)</TargetPath>
+      <Pack>true</Pack>
+      <PackagePath>lib/$(TargetFramework)/assets/%(Filename)%(Extension)</PackagePath>
+    </None>
+    <None Update="Assets\fix-content-size.js">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <TargetPath>assets/%(Filename)%(Extension)</TargetPath>
+      <Pack>true</Pack>
+      <PackagePath>lib/$(TargetFramework)/assets/%(Filename)%(Extension)</PackagePath>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="Graphene.AIOrchestrator" Version="1.*" />
-    <PackageReference Include="DocumentFormat.OpenXml" Version="3.5.1" />
+    <PackageReference Include="HtmlAgilityPack" Version="1.12.4" />
     <PackageReference Include="SixLabors.ImageSharp" Version="3.*" />
   </ItemGroup>
-
   <ItemGroup>
     <None Update="LICENSE.md">
       <Pack>True</Pack>
@@ -51,7 +75,6 @@
       <PackagePath>\</PackagePath>
     </None>
   </ItemGroup>
-
   <!-- Date-based auto version + NuGet publishing, same mechanism as AIOrchestrator.
        Local/VS: dotnet pack publishes with the NuGetApiKey env var; CI: publish.yml on master. -->
   <Target Name="SetPackageVersion" DependsOnTargets="Build">
@@ -59,28 +82,22 @@
       <PackageVersion>$(Version)</PackageVersion>
     </PropertyGroup>
   </Target>
-
   <PropertyGroup>
     <NuGetSource Condition="'$(NuGetSource)' == ''">https://api.nuget.org/v3/index.json</NuGetSource>
   </PropertyGroup>
-
   <Target Name="CleanOldNuGetPackages" BeforeTargets="GenerateNuspec">
     <CreateItem Include="$(PackageOutputPath)*.nupkg">
       <Output TaskParameter="Include" ItemName="_OldNupkg" />
     </CreateItem>
     <Delete Files="@(_OldNupkg)" />
   </Target>
-
   <Target Name="PublishPackageToNuGet" AfterTargets="Pack" Condition="'$(SkipNuGetPush)' != 'true'">
-    <Error Condition="'$(NuGetApiKey)' == ''"
-           Text="NuGetApiKey env var not set: run `setx NuGetApiKey &lt;key&gt;` and restart Visual Studio." />
+    <Error Condition="'$(NuGetApiKey)' == ''" Text="NuGetApiKey env var not set: run `setx NuGetApiKey &lt;key&gt;` and restart Visual Studio." />
     <CreateItem Include="$(PackageOutputPath)*.nupkg">
       <Output TaskParameter="Include" ItemName="_NuGetPackageToPush" />
     </CreateItem>
-    <Error Condition="'@(_NuGetPackageToPush)' == ''"
-           Text="No package found in $(PackageOutputPath): pack produced no expected file." />
+    <Error Condition="'@(_NuGetPackageToPush)' == ''" Text="No package found in $(PackageOutputPath): pack produced no expected file." />
     <Message Importance="High" Text="Publishing %(_NuGetPackageToPush.Identity) to $(NuGetSource) ..." />
     <Exec Command="dotnet nuget push &quot;%(_NuGetPackageToPush.Identity)&quot; --api-key &quot;$(NuGetApiKey)&quot; --source &quot;$(NuGetSource)&quot; --skip-duplicate" />
   </Target>
-
 </Project>

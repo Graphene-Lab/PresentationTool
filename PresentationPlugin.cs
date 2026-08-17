@@ -1,577 +1,599 @@
 using System.Text;
 using System.Text.Json;
-using DocumentFormat.OpenXml;
-using DocumentFormat.OpenXml.Packaging;
-using DocumentFormat.OpenXml.Presentation;
-using Drawing = DocumentFormat.OpenXml.Drawing;
+using System.Text.RegularExpressions;
+using System.Globalization;
+using HtmlAgilityPack;
 using SixLabors.ImageSharp;
+using System.Diagnostics;
+
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("PresentationPlugin.Harness")]
 
 namespace AIOrchestrator.API
 {
-    /// <summary>
-    /// PowerPoint (PPTX) operations for agent use: create a deck from a description, fix an existing deck
-    /// from requested changes. File paths are Unix-style, relative to the workspace root — never escape it.
-    /// </summary>
+    /// <summary>Presentation operations for agent use: create and update a self-contained HTML deck from a description or change request. File paths are Unix-style, relative to the workspace root — never escape it.</summary>
     public class PresentationPlugin : BaseAgentTool, IFileTool
     {
         private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
+        private static readonly string[] Styles = ["Modern", "Vintage", "Minimalist White", "Brutalist", "Retro Pop", "Vaporwave", "Biophilic Design", "Cyberpunk Neon", "Glassmorphism", "Bento Grid", "Retro"];
+        private const int MaxHtmlAttempts = 3;
+        private const string OnlyOutputAnswer = "- Output only full HTML code. No opening or closing comments, no fences. [Output only]";
 
-        // 16:9 slide geometry (EMU). Title box + body box of the "Title and Content" layout.
-        private const long TitleX = 838200, TitleY = 365125, TitleCx = 10515600, TitleCy = 1325563;
-        private const long BodyX = 838200, BodyY = 1825625, BodyCx = 10515600, BodyCy = 4351338;
-        private const long ImageX = 7100000, ImageY = 2000000, ImageMax = 4300000;
-        private const int SlideCx = 12192000, SlideCy = 6858000;
-
-        /// <summary>Creates a PowerPoint (PPTX) presentation from a description. The LLM designs the deck
-        /// outline (title, slides, bullets, image placement) and the tool builds the file. Start here for any new deck.</summary>
-        /// <param name="description">What the presentation must cover: topic, audience, tone and length
-        /// (e.g. "5 slides presenting the Q3 sales results to the management team").</param>
-        /// <param name="style">Optional graphic style of the presentation that shapes the wording
-        /// (e.g. "minimalist, dark background, short phrases").</param>
-        /// <param name="contextText">Optional context text the deck content must be based on.</param>
-        /// <param name="contextFile">Optional workspace file read as content context (Unix-style path, e.g. "/docs/report.md").</param>
-        /// <param name="imageFiles">Optional workspace image files to embed on slides (Unix-style paths, e.g. "/images/chart.png").
-        /// The LLM decides which slide shows each image; each image is used at most once.</param>
-        /// <param name="savePath">Optional output file path and name (Unix-style, must end with ".pptx",
-        /// e.g. "/out/sales.pptx"). Default: "/presentation_yyyyMMdd_HHmmss.pptx" in the workspace root.</param>
-        /// <returns>The generated .pptx path in workspace form, or an "Error: ..." message
-        /// (missing input, unsupported file type, LLM failure).</returns>
+        /// <summary>Generate a PowerPoint-style presentation</summary>
+        /// <param name="description">What the presentation must cover. The description must include: the subject, a descriptive title and the purpose of the presentation (e.g. "Present the Q3 2026 sales results, titled 'Record Quarter', to the management team — 5 slides"). Keep it a guideline: put the supporting material in contextText or contextFile, otherwise the tool rejects the request for lack of material.</param>
+        /// <param name="style">Optional graphic style that shapes the deck (e.g. Modern, Vintage, Minimalist White, Brutalist, Retro Pop, Vaporwave, Biophilic Design, Cyberpunk Neon, Glassmorphism, Bento Grid, Retro.</param>
+        /// <param name="contextText">Optional context text the deck content must be based on. (Mandatory if contextFile is missing)</param>
+        /// <param name="contextFile">Optional workspace file read as content context (Unix-style path, e.g. "/docs/report.md"). (Mandatory if contextText is missing)</param>
+        /// <param name="imageFiles">Optional workspace image files embedded in the deck (Unix-style paths, e.g. "/images/chart.png"). The LLM places each image; each image is used at most once.</param>
+        /// <param name="saveFullNameFile">Optional output file path and name (Unix-style, must end with ".html", e.g. "/out/sales.html"). Default: "/presentation/presentation_yyyyMMdd_HHmmss.html" in the workspace.</param>
+        /// <returns>The generated .html path in workspace form, or an "Error: ..." message (missing input, unsupported image type, insufficient context, unclear description, LLM failure).</returns>
         public string CreatePresentation(string description, string? style = null, string? contextText = null,
-            string? contextFile = null, string[]? imageFiles = null, string? savePath = null)
+            string? contextFile = null, string[]? imageFiles = null, string? saveFullNameFile = null)
         {
             if (string.IsNullOrWhiteSpace(description))
                 return "Error: description is required.";
-            if (savePath != null && !savePath.EndsWith(".pptx", StringComparison.OrdinalIgnoreCase))
-                return "Error: savePath must end with '.pptx'.";
+            if (saveFullNameFile != null && !saveFullNameFile.EndsWith(".html", StringComparison.OrdinalIgnoreCase))
+                return "Error: saveFullNameFile must end with '.html' (the presentation is saved as a self-contained HTML file).";
 
             string hostPath;
             try
             {
-                hostPath = SandboxPath.Resolve(savePath
-                    ?? $"/presentation_{DateTime.Now:yyyyMMdd_HHmmss}.pptx");
+                hostPath = SandboxPath.Resolve(saveFullNameFile
+                    ?? $"/presentation/presentation_{DateTime.Now:yyyyMMdd_HHmmss}.html");
             }
             catch (UnauthorizedAccessException ex) { return $"Error: {ex.Message}"; }
             Directory.CreateDirectory(Path.GetDirectoryName(hostPath)!);
 
             var context = new StringBuilder();
+            var contextFiles = new List<string>();
             if (!string.IsNullOrWhiteSpace(contextText)) context.AppendLine(contextText);
-            if (contextFile != null)
+            if (!string.IsNullOrWhiteSpace(contextFile))
             {
                 string ctxHost;
                 try { ctxHost = SandboxPath.Resolve(contextFile); }
                 catch (UnauthorizedAccessException ex) { return $"Error: {ex.Message}"; }
                 if (!File.Exists(ctxHost)) return $"Error: context file '{contextFile}' not found in the workspace.";
+                contextFiles.Add(SandboxPath.ToAgent(ctxHost));
                 context.AppendLine(ReadTextCapped(ctxHost, 60_000));
             }
 
             var images = new List<string>();
             if (imageFiles != null)
             {
-                foreach (var img in imageFiles)
+                foreach (var img in imageFiles.Where(f => !string.IsNullOrWhiteSpace(f)))
                 {
                     string imgHost;
                     try { imgHost = SandboxPath.Resolve(img); }
                     catch (UnauthorizedAccessException ex) { return $"Error: {ex.Message}"; }
                     if (!File.Exists(imgHost)) return $"Error: image file '{img}' not found in the workspace.";
-                    try { GetImagePartType(imgHost); }
-                    catch (InvalidOperationException ex) { return $"Error: {ex.Message}"; }
+                    if (MimeFor(imgHost) == null) return $"Error: unsupported image type for '{img}'. Use png, jpg, gif, bmp, svg or webp.";
                     images.Add(imgHost);
                 }
             }
 
-            Log.LogStep($"PresentationPlugin.CreatePresentation: description='{Truncate(description, 120)}' images={images.Count} contextLen={context.Length}");
-            var deck = AskDeck(BuildCreatePrompt(description, style, context.ToString(), images), isFix: false);
-            if (deck == null) return "Error: the LLM returned no usable deck outline. Retry later.";
-            if (deck.Slides.Count == 0) return "Error: the LLM produced an empty deck outline. Retry.";
+            style ??= Styles[Random.Shared.Next(Styles.Length)];
+            Log.LogStep($"PresentationPlugin.CreatePresentation: description='{Truncate(description, 120)}' style={style} images={images.Count} contextLen={context.Length}");
 
-            try { BuildDeck(hostPath, deck, images); }
-            catch (Exception ex) { return $"Error: cannot build the presentation. {ex.Message}"; }
+            var opinion = AskOpinion(description, context.ToString());
+            if (opinion == null) return "Error: the LLM returned no usable evaluation of the request. Retry later.";
+            if (!opinion.Sufficient || !opinion.DescriptionClear)
+                return BuildInsufficientError(opinion);
 
-            Log.LogStep($"PresentationPlugin.CreatePresentation: wrote '{hostPath}' ({deck.Slides.Count + 1} slides)");
+            var html = GenerateHtml(BuildCreatePrompt(description, style, contextFiles, context.ToString(), images));
+            if (html == null) return "Error: the LLM returned no usable HTML after 3 attempts. Retry later.";
+            var improved = GenerateHtml(ImproveHtmlCode(html, style));
+# if DEBUG
+            if (improved == null)
+                Debugger.Break();
+#endif
+            if (improved != null) html = improved;
+            else Log.LogStep("PresentationPlugin.CreatePresentation: styling pass failed, keeping first-pass HTML");
+            var checkedHtml = GenerateHtml(BuildCheckFixPrompt(html));
+            if (checkedHtml != null) html = checkedHtml;
+            else Log.LogStep("PresentationPlugin.CreatePresentation: check&fix pass failed, keeping previous HTML");
+            html = EmbedImages(html, images);
+            html = EmbedSvgIcons(html);
+            html = InjectFixContentSizeScript(html);
+            html = InjectAnimatedBackground(html, style);
+
+            try { File.WriteAllText(hostPath, html); }
+            catch (Exception ex) { return $"Error: cannot save the presentation. {ex.Message}"; }
+            Log.LogStep($"PresentationPlugin.CreatePresentation: wrote '{hostPath}' ({html.Length} chars)");
             return $"Presentation created at {SandboxPath.ToAgent(hostPath)}";
         }
 
-        /// <summary>Fixes an existing PPTX presentation by applying the requested changes: the current deck
-        /// outline is read, the LLM produces the corrected outline, and the deck is updated in place —
-        /// existing slides keep their layout and images, new slides are appended, removed ones are deleted.
-        /// A numbered backup (.NNN.bak) is created before the file is overwritten.</summary>
-        /// <param name="filePath">Path of the presentation to fix (Unix-style, e.g. "/out/sales.pptx").</param>
-        /// <param name="changes">The changes to apply (e.g. "shorten slide 3, add a summary slide at the end,
-        /// fix the typo in slide 1").</param>
-        /// <param name="contextText">Optional extra context the corrections must respect.</param>
-        /// <returns>The fixed .pptx path in workspace form, or an "Error: ..." message.</returns>
-        public string FixPresentation(string filePath, string changes, string? contextText = null)
+        /// <summary>Updates an existing HTML presentation on request (e.g. change a slide, recolor the deck, add or remove content): the current deck HTML is read, the requested changes are validated for clarity, the LLM produces the updated deck, and the file is overwritten in place. A numbered backup (.NNN.bak) is created before the file is overwritten.</summary>
+        /// <param name="filePath">Path of the presentation to update (Unix-style, e.g. "/presentation/sales.html").</param>
+        /// <param name="changes">The changes to apply (e.g. "shorten slide 3, change the colors, add a summary slide at the end").</param>
+        /// <param name="contextText">Optional extra context the update must respect.</param>
+        /// <returns>The updated .html path in workspace form (with the backup name), or an "Error: ..." message (missing input, unclear changes, LLM failure).</returns>
+        public string UpdatePresentation(string filePath, string changes, string? contextText = null)
         {
             if (string.IsNullOrWhiteSpace(changes)) return "Error: changes is required.";
             string hostPath;
             try { hostPath = SandboxPath.Resolve(filePath); }
             catch (UnauthorizedAccessException ex) { return $"Error: {ex.Message}"; }
             if (!File.Exists(hostPath)) return $"Error: file '{filePath}' not found in the workspace.";
-            if (!hostPath.EndsWith(".pptx", StringComparison.OrdinalIgnoreCase))
-                return "Error: only .pptx files can be fixed.";
+            if (!hostPath.EndsWith(".html", StringComparison.OrdinalIgnoreCase))
+                return "Error: only .html presentations can be updated (they are generated by CreatePresentation).";
 
-            string outline;
-            try { outline = ExtractOutline(hostPath); }
+            string currentHtml;
+            try { currentHtml = File.ReadAllText(hostPath); }
             catch (Exception ex) { return $"Error: cannot read the presentation. {ex.Message}"; }
 
-            Log.LogStep($"PresentationPlugin.FixPresentation: '{hostPath}' changes='{Truncate(changes, 120)}'");
-            var deck = AskDeck(BuildFixPrompt(outline, changes, contextText), isFix: true);
-            if (deck == null) return "Error: the LLM returned no usable deck outline. Retry later.";
-            if (deck.Slides.Count == 0) return "Error: the LLM produced an empty deck outline. Retry.";
+            Log.LogStep($"PresentationPlugin.UpdatePresentation: '{hostPath}' changes='{Truncate(changes, 120)}' contextText='{Truncate(contextText ?? "", 120)}'");
+            var verdict = AskChangesClear(changes, contextText);
+            if (verdict == null) return "Error: the LLM returned no usable evaluation of the changes. Retry later.";
+            if (!verdict.Clear)
+                return $"Error: the requested changes are not clear enough to apply. {Reasons(verdict.Explanation, "the changes do not say what to modify")}";
 
+            var html = GenerateHtml(BuildUpdatePrompt(currentHtml, changes, contextText));
+            if (html == null) return "Error: the LLM returned no usable HTML after 3 attempts. Retry later.";
+            var checkedHtml = GenerateHtml(BuildCheckFixPrompt(html));
+            if (checkedHtml != null) html = checkedHtml;
+            else Log.LogStep("PresentationPlugin.UpdatePresentation: check&fix pass failed, keeping updated HTML");
+            html = EmbedSvgIcons(html);
+
+            string? backup = null;
             try
             {
-                CreateBackup(hostPath);
-                ApplyDeckInPlace(hostPath, deck);
+                backup = CreateBackup(hostPath);
+                File.WriteAllText(hostPath, html);
             }
             catch (Exception ex) { return $"Error: cannot apply the changes. {ex.Message}"; }
 
-            Log.LogStep($"PresentationPlugin.FixPresentation: '{hostPath}' updated to {deck.Slides.Count} slides");
-            return $"Presentation fixed at {SandboxPath.ToAgent(hostPath)}";
+            Log.LogStep($"PresentationPlugin.UpdatePresentation: '{hostPath}' updated ({html.Length} chars) backup='{backup ?? "(none)"}'");
+            return backup == null
+                ? $"Presentation updated at {SandboxPath.ToAgent(hostPath)}"
+                : $"Presentation updated at {SandboxPath.ToAgent(hostPath)}. Previous version backed up as '{SandboxPath.ToAgent(Path.Combine(Path.GetDirectoryName(hostPath)!, backup))}'.";
         }
 
         // ---------- LLM ----------
 
-        /// <summary>Returns the corrected <see cref="DeckOutline"/> or an "Error: ..." string.</summary>
-        private static DeckOutline? AskDeck(string prompt, bool isFix)
+        /// <summary>Asks the LLM (no history) whether the given context and description are enough to build the deck; returns the JSON verdict or null when the LLM fails.</summary>
+        private static SufficiencyOpinion? AskOpinion(string description, string context)
         {
             using var llm = new LLMUtility(Setup.ProviderConfig.ProviderName);
-            var (response, _) = llm.SendQuery(prompt, maxToken: 8000, temperature: 0.3, forceJsonResponse: true);
-            if (string.IsNullOrWhiteSpace(response)) return null;
-            var deck = ParseDeckJson(response);
-            if (deck == null) return null;
-            foreach (var s in deck.Slides)
-            {
-                if (isFix) s.Image = null;
-                else if (s.Image is int idx && idx < 0) s.Image = null;
-            }
-            return deck;
+            var prompt = $$"""
+                Today's date: {{DateTime.Now:yyyy-MM-dd}}
+
+                You check whether the material provided is sufficient to fulfill the presentation request.
+                The description serves as a guideline for the presentation.
+                Do NOT proceed when the material cannot support a well-made deck: list exactly what is missing.
+                Rules:
+                - A well-known topic (e.g. "history of coffee", "solar panel industry") is ALWAYS sufficient: general knowledge builds the deck.
+                - Do NOT reject for missing details that general knowledge or design can supply: timelines, statistics, figures, market segments, slide structure, visual assets. Those are NOT missing material.
+                - Reject ONLY when the deck cannot be built at all: empty/meaningless description, or a SPECIFIC subject (a company, an event, internal data) whose essential facts are absent from the provided material — then list exactly what is missing.
+
+                Description: {{description}}
+
+                Material (context):
+                ```text
+                {{(string.IsNullOrWhiteSpace(context) ? "(none provided)" : context)}}
+                ```
+
+                Respond with ONLY JSON (no fences, no commentary):
+                {"sufficient": true|false, "descriptionClear": true|false, "explanation": ["what is missing or unclear", ...]}
+                - "sufficient" = false when the material cannot cover what the request needs.
+                - "descriptionClear" = false when the description is ambiguous (unclear subject, title or purpose).
+                - "explanation" lists the concrete missing/unclear items when a flag is false; empty otherwise.
+                """;
+            var (response, hResult) = llm.SendQuery(prompt, useHistory: false, role: LLMUtility.SystemRole.DocumentPreparer,
+                forceJsonResponse: true);
+            if (hResult != null || string.IsNullOrWhiteSpace(response)) return null;
+            var opinion = TryParseJson<SufficiencyOpinion>(response);
+            if (opinion == null) Log.LogStep($"PresentationPlugin.AskOpinion: unparseable JSON response");
+            else Log.LogStep($"PresentationPlugin.AskOpinion: sufficient={opinion.Sufficient} descriptionClear={opinion.DescriptionClear}");
+            return opinion;
         }
 
-        private static string BuildCreatePrompt(string description, string? style, string context, List<string> images)
+        /// <summary>Asks the LLM (no history) whether the requested changes (and optional context) are clear enough to apply; returns the JSON verdict or null when the LLM fails.</summary>
+        private static ChangeVerdict? AskChangesClear(string changes, string? contextText)
+        {
+            using var llm = new LLMUtility(Setup.ProviderConfig.ProviderName);
+            var prompt = $$"""
+                Today's date: {{DateTime.Now:yyyy-MM-dd}}
+
+                You are about to edit an existing presentation. Validate that the requested changes are clear enough to apply.
+                Rules:
+                - Decide sensible details yourself (e.g. which slide is "the first", which shade of blue, what "colors" means) — these do NOT make the request unclear.
+                - Reject ONLY when the changes are genuinely unusable: empty, meaningless or contradictory requests.
+                {{(!string.IsNullOrWhiteSpace(contextText) ? "Additional context: " + contextText : "")}}
+
+                Requested changes: {{changes}}
+
+                Respond with ONLY JSON (no fences, no commentary):
+                {"clear": true|false, "explanation": ["what is missing or unclear", ...]}
+                - "clear" = false ONLY when the changes cannot be interpreted at all.
+                - "explanation" lists what is unclear when "clear" is false; empty array otherwise.
+                """;
+            var (response, hResult) = llm.SendQuery(prompt, useHistory: false, role: LLMUtility.SystemRole.DocumentPreparer,
+                forceJsonResponse: true);
+            if (hResult != null || string.IsNullOrWhiteSpace(response)) return null;
+            var verdict = TryParseJson<ChangeVerdict>(response);
+            if (verdict == null) Log.LogStep($"PresentationPlugin.AskChangesClear: unparseable JSON response");
+            else Log.LogStep($"PresentationPlugin.AskChangesClear: clear={verdict.Clear}");
+            return verdict;
+        }
+
+        /// <summary>Generates deck HTML via the LLM (no history), validates it as HTML5 and retries up to <see cref="MaxHtmlAttempts"/> times, feeding back the validation errors. Returns null when all attempts fail.</summary>
+        private static string? GenerateHtml(string prompt)
+        {
+            using var llm = new LLMUtility(Setup.ProviderConfig.ProviderName);
+            for (int attempt = 1; attempt <= MaxHtmlAttempts; attempt++)
+            {
+                Log.LogStep($"PresentationPlugin.GenerateHtml: attempt {attempt}/{MaxHtmlAttempts}");
+                var (response, hResult) = llm.SendQuery(prompt, useHistory: false, role: LLMUtility.SystemRole.DocumentPreparer);
+                if (hResult != null)
+                {
+                    Log.LogStep($"PresentationPlugin.GenerateHtml: LLM error hResult={hResult} — aborting");
+                    return null;
+                }
+                if (string.IsNullOrWhiteSpace(response)) continue;
+                var html = response;
+                if (!Utility.RemoveFencesEncapsulationAndFixTrim(ref html, false))
+                {
+                    Log.LogStep($"PresentationPlugin.GenerateHtml: malformed fences on attempt {attempt}");
+                    continue;
+                }
+                if (IsValidHtml5(html, out var errors))
+                {
+                    Log.LogStep($"PresentationPlugin.GenerateHtml: valid HTML on attempt {attempt}");
+                    return html;
+                }
+                Log.LogStep($"PresentationPlugin.GenerateHtml: invalid HTML on attempt {attempt} ({errors.Count} errors: {string.Join(" | ", errors.Take(6))})");
+                if (attempt == MaxHtmlAttempts) break;
+                var errorFeedback = string.Join("\n", errors.Take(8).Select(e => $"  - {e}"));
+                var missingEnd = !html.TrimEnd().EndsWith("</html>", StringComparison.OrdinalIgnoreCase);
+                prompt = $"""
+                    The previous HTML5 code you provided was not valid.
+                    Here is the code that failed:
+                    ```html
+                    {html}
+                    ```
+                    Validation errors:
+                    {errorFeedback}
+                    {(missingEnd ? "The document does not end with the closing </html> tag." : "")}
+
+                    Please fix ALL the errors above and provide a corrected, valid HTML5 version.
+                    {OnlyOutputAnswer}
+                    """;
+            }
+            return null;
+        }
+
+        private static string BuildCreatePrompt(string description, string style, List<string> contextFiles, string context, List<string> images)
         {
             var sb = new StringBuilder();
-            sb.AppendLine("You are a presentation designer. Design a PowerPoint deck from the request below.");
-            sb.AppendLine("Respond with ONLY a JSON object (no markdown fences, no commentary) matching this exact schema:");
-            sb.AppendLine("{\"title\": string, \"slides\": [{\"title\": string, \"bullets\": [string], \"image\": int|null}]}");
-            sb.AppendLine("Rules:");
-            sb.AppendLine("- 3 to 12 slides. The first slide is the title slide; the rest are content slides.");
-            sb.AppendLine("- Each bullet is a short phrase (max ~12 words); 2 to 6 bullets per slide.");
-            sb.AppendLine("- \"image\" is the 0-based index into the provided image list for the slide picture, or null; at most one image per slide, each image used at most once.");
-            sb.AppendLine("- Content must follow the description, the style and any provided context. Write the content in the language of the description.");
+            sb.AppendLine("Today's date: " + DateTime.Now.ToString("yyyy-MM-dd"));
+            sb.AppendLine("Create a website of presentation using these context documents.");
+            sb.AppendLine("Presentation description: " + description);
+            sb.AppendLine("Create as many slides as needed for your purpose (add or remove .slide elements in the template as needed).");
+            if (contextFiles.Count > 0)
+            {
+                sb.AppendLine("Context documents (workspace paths):");
+                foreach (var p in contextFiles) sb.AppendLine("- " + p);
+            }
+            if (!string.IsNullOrWhiteSpace(context))
+            {
+                sb.AppendLine("Context content:");
+                sb.AppendLine("```text");
+                sb.AppendLine(context.TrimEnd());
+                sb.AppendLine("```");
+            }
             sb.AppendLine();
-            sb.AppendLine("Description: " + description);
-            if (!string.IsNullOrWhiteSpace(style)) sb.AppendLine("Graphic style: " + style);
-            if (!string.IsNullOrWhiteSpace(context)) sb.AppendLine("Context:" + Environment.NewLine + context.TrimEnd());
+            sb.AppendLine("- To make communication more effective you can insert into the slides: Tables, Kanban Boards, Timelines, Roadmaps, Organizational Charts, Flowcharts, Venn Diagrams, SWOT Analysis grids, PESTLE Analysis frameworks, Decision Trees, and other useful elements.");
+            sb.AppendLine("- Don't use small fonts.");
+            sb.AppendLine("- Contrast font colors in both themes.");
             if (images.Count > 0)
             {
-                sb.AppendLine("Available images (index: file name):");
-                for (int i = 0; i < images.Count; i++) sb.AppendLine($"  {i}: {Path.GetFileName(images[i])}");
+                sb.AppendLine("Available images (reference by file name only, e.g. <img src=\"chart.png\">):");
+                foreach (var img in images) sb.AppendLine("- " + DescribeImage(img));
             }
+            sb.AppendLine("- Use square SVG icons with a self-explanatory file name that can encode size and color: <icon-name>.<size>.<rrggbb>.svg (these files will be auto-generated based on the name you give them). Usage example: disc.32.aa0000.svg (a disc icon, 32x32 px, hex color #aa0000) → <img src=\"disc.32.aa0000.svg\" alt=\"disc\">");
+            sb.AppendLine("- Use this template (keep its CSS classes, light and dark theme, navigation buttons and script unchanged; fill the .slide elements with the deck slides):");
+            sb.AppendLine("```html");
+            sb.AppendLine(TemplateHtml);
+            sb.AppendLine("```");
+            sb.AppendLine("- Write the content in the language of the description.");
+            sb.AppendLine("- The output MUST be in HTML format");
+            sb.AppendLine("- Check before output");
+            sb.AppendLine(OnlyOutputAnswer);
             return sb.ToString();
         }
 
-        private static string BuildFixPrompt(string outline, string changes, string? contextText)
+        private static string ImproveHtmlCode(string currentHtml, string style)
         {
             var sb = new StringBuilder();
-            sb.AppendLine("You are a presentation editor. Below is the current outline of an existing PowerPoint deck.");
-            sb.AppendLine("Apply the requested changes and respond with the FULL corrected deck as ONLY a JSON object (no markdown fences, no commentary):");
-            sb.AppendLine("{\"title\": string, \"slides\": [{\"title\": string, \"bullets\": [string], \"image\": null}]}");
-            sb.AppendLine("Rules:");
-            sb.AppendLine("- Keep the slide order and count unless the changes require otherwise.");
-            sb.AppendLine("- Keep titles and bullets concise; 2 to 6 bullets per slide.");
-            sb.AppendLine("- \"image\" must always be null.");
-            sb.AppendLine("- The deck title stays the same unless the changes say otherwise. Write in the language of the current outline.");
-            sb.AppendLine();
-            sb.AppendLine("Current deck outline:");
-            sb.AppendLine(outline.TrimEnd());
-            sb.AppendLine();
-            sb.AppendLine("Requested changes: " + changes);
-            if (!string.IsNullOrWhiteSpace(contextText)) sb.AppendLine("Additional context:" + Environment.NewLine + contextText);
+            sb.AppendLine("Improve HTML code with these enhancements:");
+            sb.AppendLine($"- Implement a \"{style.ToUpper()}\" design on the page");
+            sb.AppendLine("- Add effects and transitions to slide elements");
+            sb.AppendLine("- Use JavaScript to create amazing slide graphics.");
+            // sb.AppendLine("- Preserve the basic slide structure.");
+            sb.AppendLine("HTML code:");
+            sb.AppendLine("```html");
+            sb.AppendLine(currentHtml);
+            sb.AppendLine("```");
+            sb.AppendLine(OnlyOutputAnswer);
             return sb.ToString();
         }
 
-        private static DeckOutline? ParseDeckJson(string raw)
+        private static string BuildCheckFixPrompt(string currentHtml)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("* Check and fix the following:");
+            sb.AppendLine("- There should be no small fonts.");
+            sb.AppendLine("- Content must fit the slide container: (Verify the dimensions mathematically, and fix the content if it goes off the slide).");
+            sb.AppendLine("- Check for both light and dark theme the correctness of the contrast between the text color and the background (fix if necessary).");
+            // sb.AppendLine("- Preserve the basic slide structure.");
+            sb.AppendLine("HTML code:");
+            sb.AppendLine("```html");
+            sb.AppendLine(currentHtml);
+            sb.AppendLine("```");
+            sb.AppendLine(OnlyOutputAnswer);
+            return sb.ToString();
+        }
+
+        private static string BuildUpdatePrompt(string currentHtml, string changes, string? contextText)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("Today's date: " + DateTime.Now.ToString("yyyy-MM-dd"));
+            sb.AppendLine("Edit an existing PowerPoint presentation (16:9 deck) rendered as a single HTML file.");
+            sb.AppendLine("Apply the requested changes LITERALLY to the HTML below:");
+            sb.AppendLine("- The exact strings in the changes request (titles, labels, text) MUST appear verbatim in the output — do not reword or replace them.");
+            sb.AppendLine("- Change ONLY what the changes request; keep the rest of the content, wording and structure identical.");
+            sb.AppendLine("- Keep the template's CSS classes, navigation buttons and script unchanged; edit the .slide elements (and styles only if needed).");
+            sb.AppendLine();
+            sb.AppendLine("Current presentation HTML:");
+            sb.AppendLine("```html");
+            sb.AppendLine(currentHtml);
+            sb.AppendLine("```");
+            sb.AppendLine();
+            sb.AppendLine("Requested changes: " + changes);
+            if (!string.IsNullOrWhiteSpace(contextText)) sb.AppendLine("Additional context: " + contextText);
+            sb.AppendLine("You may add SVG icons with a minimalist self-descriptive file name, such as <icon-name>.svg (these files will be auto-generated based on the minimalist name you give them).");
+            sb.AppendLine("Write the content in the language of the presentation.");
+            sb.AppendLine(OnlyOutputAnswer);
+            return sb.ToString();
+        }
+
+        private static string BuildInsufficientError(SufficiencyOpinion opinion)
+        {
+            var reasons = Reasons(opinion.Explanation, "the context does not cover the requested topic");
+            if (!opinion.Sufficient && !opinion.DescriptionClear)
+                return $"Error: the context is not sufficient and the description is not clear enough to create the presentation. {reasons}";
+            if (!opinion.Sufficient)
+                return $"Error: the context is not sufficient to create the presentation. {reasons}";
+            return $"Error: the description is not clear enough to create the presentation. {reasons}";
+        }
+
+        private static string Reasons(List<string>? explanation, string fallback) =>
+            explanation is { Count: > 0 }
+                ? string.Join(" ", explanation.Select(e => "- " + e))
+                : "- " + fallback;
+
+        // ---------- HTML post-processing ----------
+
+        /// <summary>Replaces every src reference to a provided image with an inline data URI, so the
+        /// deck is self-contained. The reference may be a bare file name or a path ending with it
+        /// (src="logo.png", src="./img/logo.png", src="/img/logo.png").</summary>
+        private static string EmbedImages(string html, List<string> images)
+        {
+            foreach (var img in images)
+            {
+                var name = Path.GetFileName(img);
+                var dataUri = "data:" + MimeFor(img) + ";base64," + Convert.ToBase64String(File.ReadAllBytes(img));
+                html = Regex.Replace(html,
+                    $@"src=[""'](?:[^""'/]*/)*{Regex.Escape(name)}[""']",
+                    m => $"src=\"{dataUri}\"", RegexOptions.IgnoreCase);
+            }
+            return html;
+        }
+
+        /// <summary>Replaces every "&lt;icon-name&gt;[.&lt;size&gt;].[.&lt;rrggbb&gt;].svg" img placeholder with the
+        /// matching icon from the host assets, encoded as a data URI (shared logic in
+        /// Utility.EmbedSvgIcons — same pipeline as the document cover render in MD2PDF). The
+        /// reference may be a bare name or a path ending with it.</summary>
+        internal static string EmbedSvgIcons(string html)
+        {
+            var iconsPath = Path.Combine(AppContext.BaseDirectory, "assets", "icons");
+            return Utility.EmbedSvgIcons(html, iconsPath);
+        }
+
+        /// <summary>Injects the content-size fix script before &lt;/body&gt; (the asset is a complete
+        /// HTML snippet, inserted as-is). Missing asset is a no-op: the enhancement is optional and
+        /// must never fail the deck creation.</summary>
+        internal static string InjectFixContentSizeScript(string html)
+        {
+            try
+            {
+                var script = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "assets", "fix-content-size.js"), Encoding.UTF8);
+                return html.Replace("</body>", script + "\n</body>", StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception ex)
+            {
+                Log.LogStep($"PresentationPlugin.InjectFixContentSizeScript: asset not injected: {ex.Message}");
+                return html;
+            }
+        }
+
+        /// <summary>Injects the animated background block (assets/&lt;style&gt;.bg) before &lt;/head&gt; so the
+        /// deck body gets a style-matching animated background. The block is looked up by style name
+        /// (case-insensitive); when the current style has no block, a random one is picked. Missing
+        /// assets or a missing &lt;/head&gt; leave the HTML unchanged.</summary>
+        internal static string InjectAnimatedBackground(string html, string style)
+        {
+            string[] candidates;
+            try { candidates = Directory.GetFiles(Path.Combine(AppContext.BaseDirectory, "assets"), "*.bg"); }
+            catch { return html; }
+            if (candidates.Length == 0) return html;
+            var file = candidates.FirstOrDefault(f =>
+                Path.GetFileNameWithoutExtension(f).Equals(style, StringComparison.OrdinalIgnoreCase))
+                ?? candidates[Random.Shared.Next(candidates.Length)];
+            string block;
+            try { block = File.ReadAllText(file, Encoding.UTF8); }
+            catch { return html; }
+
+            if (html.Contains("</head>", StringComparison.OrdinalIgnoreCase))
+            {
+                // add 75% of transparency
+                var addTransparent = "<style>.slide {background-color: color-mix(in srgb, var(--color-slide-bg) 75%, transparent) !important;}</style>";
+                html = html.Replace("</head>", addTransparent + "\n</head>", StringComparison.OrdinalIgnoreCase);
+            }
+
+            return html.Contains("</head>", StringComparison.OrdinalIgnoreCase)
+                ? html.Replace("</head>", block + "\n</head>", StringComparison.OrdinalIgnoreCase)
+                : html;
+        }
+
+        private static string? MimeFor(string path) =>
+            Path.GetExtension(path).ToLowerInvariant() switch
+            {
+                ".png" => "image/png",
+                ".jpg" or ".jpeg" => "image/jpeg",
+                ".gif" => "image/gif",
+                ".bmp" => "image/bmp",
+                ".svg" => "image/svg+xml",
+                ".webp" => "image/webp",
+                _ => null
+            };
+
+        /// <summary>One-line image description for the LLM prompt: file name, descriptive tag, workspace path, pixel size, and (for PNG) whether the background is transparent.</summary>
+        private static string DescribeImage(string img)
+        {
+            var sb = new StringBuilder(Path.GetFileName(img));
+            sb.Append(" (");
+            var tag = ImageTag(img);
+            if (tag.Length > 0) sb.Append("tag: ").Append(tag).Append(", ");
+            sb.Append("workspace path ").Append(SandboxPath.ToAgent(img));
+            var size = ImageSize(img);
+            if (size != null)
+                sb.Append(", ").Append(size.Value.Width).Append('x').Append(size.Value.Height).Append(" px");
+            if (img.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+                sb.Append(PngHasTransparentBackground(img) ? ", transparent background" : ", opaque background");
+            sb.Append(')');
+            return sb.ToString();
+        }
+
+        /// <summary>Human-readable tag derived deterministically from the file name: splits PascalCase/CamelCase words and turns "-"/"_" separators into spaces, capitalizing each word (MilanoDuomo → "Milano Duomo", milano_duomo → "Milano Duomo"). Empty when the name has no letters.</summary>
+        private static string ImageTag(string path)
+        {
+            var name = Path.GetFileNameWithoutExtension(path);
+            name = Regex.Replace(name, @"[-_]+", " ");
+            name = Regex.Replace(name, @"(?<=[a-z0-9])(?=[A-Z])", " ");
+            return string.Join(" ", name.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                .Select(w => char.ToUpperInvariant(w[0]) + w[1..]));
+        }
+
+        /// <summary>Pixel size read deterministically from the file header (ImageSharp Identify; SVG via its width/height/viewBox attributes). Null when the size cannot be determined.</summary>
+        private static (int Width, int Height)? ImageSize(string path)
+        {
+            if (path.EndsWith(".svg", StringComparison.OrdinalIgnoreCase))
+                return SvgSize(path);
+            try
+            {
+                using var fs = File.OpenRead(path);
+                var info = Image.Identify(fs);
+                return (info.Width, info.Height);
+            }
+            catch { return null; }
+        }
+
+        private static (int Width, int Height)? SvgSize(string path)
+        {
+            try
+            {
+                var text = File.ReadAllText(path, Encoding.UTF8);
+                var wm = Regex.Match(text, @"width\s*=\s*[""'](\d+(?:\.\d+)?)");
+                var hm = Regex.Match(text, @"height\s*=\s*[""'](\d+(?:\.\d+)?)");
+                if (wm.Success && hm.Success)
+                    return ((int)double.Parse(wm.Groups[1].Value, CultureInfo.InvariantCulture),
+                            (int)double.Parse(hm.Groups[1].Value, CultureInfo.InvariantCulture));
+                var vb = Regex.Match(text, @"viewBox\s*=\s*[""']\s*[-\d.]+\s+[-\d.]+\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)");
+                return vb.Success
+                    ? ((int)double.Parse(vb.Groups[1].Value, CultureInfo.InvariantCulture),
+                       (int)double.Parse(vb.Groups[2].Value, CultureInfo.InvariantCulture))
+                    : null;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>Deterministic PNG header check: the image has transparency when the IHDR color type carries an alpha channel (4 or 6) or a tRNS chunk is present. No pixel decoding.</summary>
+        private static bool PngHasTransparentBackground(string path)
+        {
+            try
+            {
+                using var fs = File.OpenRead(path);
+                Span<byte> header = stackalloc byte[26];
+                if (fs.Read(header) < 26) return false;
+                if (header[0] != 0x89 || header[1] != 0x50 || header[2] != 0x4E || header[3] != 0x47) return false; // not a PNG
+                var colorType = header[25];
+                if (colorType is 4 or 6) return true;
+                if (colorType is 0 or 2 or 3)
+                {
+                    long pos = 8;
+                    Span<byte> chunkHead = stackalloc byte[8];
+                    while (pos + 8 <= fs.Length)
+                    {
+                        fs.Position = pos;
+                        if (fs.Read(chunkHead) < 8) break;
+                        var len = (chunkHead[0] << 24) | (chunkHead[1] << 16) | (chunkHead[2] << 8) | chunkHead[3];
+                        var type = Encoding.ASCII.GetString(chunkHead[4..8]);
+                        if (type == "tRNS") return true;
+                        if (type == "IEND") break;
+                        pos += 12 + len;
+                    }
+                }
+                return false;
+            }
+            catch { return false; }
+        }
+
+        private static readonly HashSet<HtmlParseErrorCode> CriticalErrors = new()
+        {
+            HtmlParseErrorCode.TagNotClosed, HtmlParseErrorCode.TagNotOpened,
+            HtmlParseErrorCode.EndTagNotRequired, HtmlParseErrorCode.EndTagInvalidHere
+        };
+
+        private static bool IsValidHtml5(string html, out List<string> errors)
+        {
+            errors = new List<string>();
+            if (string.IsNullOrWhiteSpace(html))
+            {
+                errors.Add("HTML is empty.");
+                return false;
+            }
+            var doc = new HtmlDocument();
+            doc.LoadHtml(html);
+            foreach (var e in doc.ParseErrors)
+            {
+                if (CriticalErrors.Contains(e.Code))
+                    errors.Add($"Line {e.Line}, Pos {e.LinePosition}: {e.Reason}");
+            }
+            return errors.Count == 0;
+        }
+
+        // ---------- JSON ----------
+
+        private static T? TryParseJson<T>(string raw) where T : class
         {
             var start = raw.IndexOf('{');
             var end = raw.LastIndexOf('}');
             if (start < 0 || end <= start) return null;
-            var json = raw.Substring(start, end - start + 1);
-            try { return JsonSerializer.Deserialize<DeckOutline>(json, JsonOpts); }
+            try { return JsonSerializer.Deserialize<T>(raw.Substring(start, end - start + 1), JsonOpts); }
             catch (JsonException) { return null; }
         }
 
-        // ---------- PPTX builder (OOXML, transitional) ----------
-
-        private static void BuildDeck(string hostPath, DeckOutline deck, List<string> images)
+        private sealed class SufficiencyOpinion
         {
-            using var doc = PresentationDocument.Create(hostPath, PresentationDocumentType.Presentation);
-            var presPart = doc.AddPresentationPart()!;
-
-            // Theme under the presentation part, shared to the master (PowerPoint requirement).
-            var themePart = presPart.AddNewPart<ThemePart>("rId2")!;
-            var masterPart = presPart.AddNewPart<SlideMasterPart>("rId1")!;
-            masterPart.AddPart(themePart);
-            themePart.Theme = BuildTheme();
-            themePart.Theme.Save();
-
-            var titleLayoutPart = masterPart.AddNewPart<SlideLayoutPart>("rId1")!;
-            titleLayoutPart.SlideLayout = BuildTitleLayout();
-            titleLayoutPart.SlideLayout.Save();
-            titleLayoutPart.AddPart(masterPart);
-
-            var contentLayoutPart = masterPart.AddNewPart<SlideLayoutPart>("rId2")!;
-            contentLayoutPart.SlideLayout = BuildContentLayout();
-            contentLayoutPart.SlideLayout.Save();
-            contentLayoutPart.AddPart(masterPart);
-
-            masterPart.SlideMaster = BuildMaster();
-            masterPart.SlideMaster.Save();
-
-            presPart.Presentation = new Presentation(
-                new SlideMasterIdList(new SlideMasterId { Id = 2147483648U, RelationshipId = "rId1" }),
-                new SlideIdList(),
-                new SlideSize { Cx = SlideCx, Cy = SlideCy },
-                new NotesSize { Cx = 6858000, Cy = 9144000 });
-            presPart.Presentation.Save();
-
-            var slideList = new List<(DeckSlide Slide, bool IsTitle)> { (new DeckSlide { Title = deck.Title }, true) };
-            slideList.AddRange(deck.Slides.Select(s => (s, false)));
-
-            uint id = 256;
-            for (int i = 0; i < slideList.Count; i++)
-            {
-                var (slideData, isTitle) = slideList[i];
-                var relId = $"rId{3 + i}";
-                var slidePart = presPart.AddNewPart<SlidePart>(relId)!;
-                slidePart.AddPart(isTitle ? titleLayoutPart : contentLayoutPart);
-                slidePart.Slide = isTitle ? BuildTitleSlide(slideData.Title) : BuildContentSlide(slideData, images, slidePart);
-                slidePart.Slide.Save();
-                presPart.Presentation.SlideIdList!.Append(new SlideId { Id = id++, RelationshipId = relId });
-            }
-            presPart.Presentation.Save();
+            public bool Sufficient { get; set; }
+            public bool DescriptionClear { get; set; }
+            public List<string>? Explanation { get; set; }
         }
 
-        private static Drawing.Theme BuildTheme() => new(
-            new Drawing.ThemeElements(
-                new Drawing.ColorScheme(
-                    new Drawing.Dark1Color(new Drawing.SystemColor { Val = Drawing.SystemColorValues.WindowText, LastColor = "000000" }),
-                    new Drawing.Light1Color(new Drawing.SystemColor { Val = Drawing.SystemColorValues.Window, LastColor = "FFFFFF" }),
-                    new Drawing.Dark2Color(new Drawing.RgbColorModelHex { Val = "44546A" }),
-                    new Drawing.Light2Color(new Drawing.RgbColorModelHex { Val = "E7E6E6" }),
-                    new Drawing.Accent1Color(new Drawing.RgbColorModelHex { Val = "4472C4" }),
-                    new Drawing.Accent2Color(new Drawing.RgbColorModelHex { Val = "ED7D31" }),
-                    new Drawing.Accent3Color(new Drawing.RgbColorModelHex { Val = "A5A5A5" }),
-                    new Drawing.Accent4Color(new Drawing.RgbColorModelHex { Val = "FFC000" }),
-                    new Drawing.Accent5Color(new Drawing.RgbColorModelHex { Val = "5B9BD5" }),
-                    new Drawing.Accent6Color(new Drawing.RgbColorModelHex { Val = "70AD47" }),
-                    new Drawing.Hyperlink(new Drawing.RgbColorModelHex { Val = "0563C1" }),
-                    new Drawing.FollowedHyperlinkColor(new Drawing.RgbColorModelHex { Val = "954F72" })
-                ) { Name = "Office" },
-                new Drawing.FontScheme(
-                    new Drawing.MajorFont(
-                        new Drawing.LatinFont { Typeface = "Calibri Light" },
-                        new Drawing.EastAsianFont { Typeface = "" },
-                        new Drawing.ComplexScriptFont { Typeface = "" }),
-                    new Drawing.MinorFont(
-                        new Drawing.LatinFont { Typeface = "Calibri" },
-                        new Drawing.EastAsianFont { Typeface = "" },
-                        new Drawing.ComplexScriptFont { Typeface = "" })
-                ) { Name = "Office" },
-                new Drawing.FormatScheme(
-                    new Drawing.FillStyleList(
-                        new Drawing.SolidFill(new Drawing.SchemeColor { Val = Drawing.SchemeColorValues.PhColor }),
-                        new Drawing.SolidFill(new Drawing.SchemeColor { Val = Drawing.SchemeColorValues.PhColor }),
-                        new Drawing.SolidFill(new Drawing.SchemeColor { Val = Drawing.SchemeColorValues.PhColor })),
-                    new Drawing.LineStyleList(
-                        new Drawing.Outline(new Drawing.SolidFill(new Drawing.SchemeColor { Val = Drawing.SchemeColorValues.PhColor })) { Width = 6350, CapType = Drawing.LineCapValues.Flat },
-                        new Drawing.Outline(new Drawing.SolidFill(new Drawing.SchemeColor { Val = Drawing.SchemeColorValues.PhColor })) { Width = 12700, CapType = Drawing.LineCapValues.Flat },
-                        new Drawing.Outline(new Drawing.SolidFill(new Drawing.SchemeColor { Val = Drawing.SchemeColorValues.PhColor })) { Width = 19050, CapType = Drawing.LineCapValues.Flat }),
-                    new Drawing.EffectStyleList(
-                        new Drawing.EffectStyle(new Drawing.EffectList()),
-                        new Drawing.EffectStyle(new Drawing.EffectList()),
-                        new Drawing.EffectStyle(new Drawing.EffectList())),
-                    new Drawing.BackgroundFillStyleList(
-                        new Drawing.SolidFill(new Drawing.SchemeColor { Val = Drawing.SchemeColorValues.PhColor }),
-                        new Drawing.SolidFill(new Drawing.SchemeColor { Val = Drawing.SchemeColorValues.PhColor }),
-                        new Drawing.SolidFill(new Drawing.SchemeColor { Val = Drawing.SchemeColorValues.PhColor }))
-                ) { Name = "Office" }
-            )) { Name = "Office Theme" };
-
-        private static SlideMaster BuildMaster() => new(
-            new CommonSlideData(EmptyShapeTree()),
-            new ColorMap
-            {
-                Background1 = Drawing.ColorSchemeIndexValues.Light1,
-                Text1 = Drawing.ColorSchemeIndexValues.Dark1,
-                Background2 = Drawing.ColorSchemeIndexValues.Light2,
-                Text2 = Drawing.ColorSchemeIndexValues.Dark2,
-                Accent1 = Drawing.ColorSchemeIndexValues.Accent1,
-                Accent2 = Drawing.ColorSchemeIndexValues.Accent2,
-                Accent3 = Drawing.ColorSchemeIndexValues.Accent3,
-                Accent4 = Drawing.ColorSchemeIndexValues.Accent4,
-                Accent5 = Drawing.ColorSchemeIndexValues.Accent5,
-                Accent6 = Drawing.ColorSchemeIndexValues.Accent6,
-                Hyperlink = Drawing.ColorSchemeIndexValues.Hyperlink,
-                FollowedHyperlink = Drawing.ColorSchemeIndexValues.FollowedHyperlink
-            },
-            new SlideLayoutIdList(
-                new SlideLayoutId { Id = 2147483649U, RelationshipId = "rId1" },
-                new SlideLayoutId { Id = 2147483650U, RelationshipId = "rId2" }));
-
-        private static SlideLayout BuildTitleLayout() => new(
-            new CommonSlideData(
-                new ShapeTree(
-                    new GroupShapeProperties(),
-                    LayoutPlaceholder(2, "Title", PlaceholderValues.CenteredTitle, 685800, 2130425, 7772400, 1470025),
-                    LayoutPlaceholder(3, "Subtitle", PlaceholderValues.SubTitle, 1371600, 3886200, 6400800, 1752600, 1)))
-            { Name = "Title Slide" },
-            new ColorMapOverride(new Drawing.MasterColorMapping()))
-        { Type = SlideLayoutValues.Title };
-
-        private static SlideLayout BuildContentLayout() => new(
-            new CommonSlideData(
-                new ShapeTree(
-                    new GroupShapeProperties(),
-                    LayoutPlaceholder(2, "Title", PlaceholderValues.Title, TitleX, TitleY, TitleCx, TitleCy),
-                    LayoutPlaceholder(3, "Content", PlaceholderValues.Body, BodyX, BodyY, BodyCx, BodyCy, 1)))
-            { Name = "Title and Content" },
-            new ColorMapOverride(new Drawing.MasterColorMapping()))
-        { Type = SlideLayoutValues.ObjectText };
-
-        private static Slide BuildTitleSlide(string title)
+        private sealed class ChangeVerdict
         {
-            var tree = ShapeTreeWith(TextShape(2, "Title", title, null, titlePh: true, 685800, 2130425, 7772400, 1470025));
-            return new Slide(new CommonSlideData(tree), new ColorMapOverride(new Drawing.MasterColorMapping()));
-        }
-
-        private static Slide BuildContentSlide(DeckSlide slide, List<string>? images, SlidePart slidePart)
-        {
-            var hasImage = slide.Image is int idx && idx >= 0 && images != null && idx < images.Count;
-            var bodyCx = hasImage ? 5800000 : BodyCx;
-            var tree = ShapeTreeWith(TextShape(2, "Title", slide.Title, null, titlePh: true, TitleX, TitleY, TitleCx, TitleCy));
-            tree.Append(TextShape(3, "Body", null, slide.Bullets, titlePh: false, BodyX, BodyY, bodyCx, BodyCy));
-            if (hasImage) AddPicture(slidePart, tree, images![slide.Image!.Value]);
-            return new Slide(new CommonSlideData(tree), new ColorMapOverride(new Drawing.MasterColorMapping()));
-        }
-
-        private static ShapeTree EmptyShapeTree() => ShapeTreeWith();
-
-        private static ShapeTree ShapeTreeWith(params OpenXmlElement[] children)
-        {
-            var elements = new List<OpenXmlElement>
-            {
-                new NonVisualGroupShapeProperties(
-                    new NonVisualDrawingProperties { Id = 1, Name = "" },
-                    new NonVisualGroupShapeDrawingProperties(),
-                    new ApplicationNonVisualDrawingProperties()),
-                new GroupShapeProperties()
-            };
-            elements.AddRange(children);
-            return new ShapeTree(elements);
-        }
-
-        private static Shape LayoutPlaceholder(uint id, string name, PlaceholderValues type, long x, long y, long cx, long cy, uint? idx = null)
-        {
-            var ph = new PlaceholderShape { Type = type };
-            if (idx.HasValue) ph.Index = idx.Value;
-            return new Shape(
-                new NonVisualShapeProperties(
-                    new NonVisualDrawingProperties { Id = id, Name = name },
-                    new NonVisualShapeDrawingProperties(new Drawing.ShapeLocks { NoGrouping = true }),
-                    new ApplicationNonVisualDrawingProperties(ph)),
-                new ShapeProperties(
-                    new Drawing.Transform2D(new Drawing.Offset { X = x, Y = y }, new Drawing.Extents { Cx = cx, Cy = cy })),
-                new TextBody(new Drawing.BodyProperties(), new Drawing.ListStyle(), new Drawing.Paragraph(new Drawing.EndParagraphRunProperties())));
-        }
-
-        private static Shape TextShape(uint id, string name, string? title, IReadOnlyList<string>? bullets, bool titlePh, long x, long y, long cx, long cy)
-        {
-            var paragraphs = new List<Drawing.Paragraph>();
-            if (title != null) paragraphs.Add(TitleParagraph(title));
-            if (bullets != null) foreach (var b in bullets) paragraphs.Add(BulletParagraph(b));
-            if (paragraphs.Count == 0) paragraphs.Add(new Drawing.Paragraph(new Drawing.EndParagraphRunProperties()));
-            var textBody = new TextBody(new Drawing.BodyProperties(), new Drawing.ListStyle());
-            foreach (var p in paragraphs) textBody.Append(p);
-            var ph = new PlaceholderShape { Type = titlePh ? PlaceholderValues.Title : PlaceholderValues.Body };
-            if (!titlePh) ph.Index = 1;
-            return new Shape(
-                new NonVisualShapeProperties(
-                    new NonVisualDrawingProperties { Id = id, Name = name },
-                    new NonVisualShapeDrawingProperties(new Drawing.ShapeLocks { NoGrouping = true }),
-                    new ApplicationNonVisualDrawingProperties(ph)),
-                new ShapeProperties(
-                    new Drawing.Transform2D(new Drawing.Offset { X = x, Y = y }, new Drawing.Extents { Cx = cx, Cy = cy }),
-                    new Drawing.PresetGeometry(new Drawing.AdjustValueList()) { Preset = Drawing.ShapeTypeValues.Rectangle }),
-                textBody);
-        }
-
-        private static Drawing.Paragraph TitleParagraph(string text) =>
-            new(new Drawing.ParagraphProperties(), Run(text, 4000, bold: true, accent: true));
-
-        private static Drawing.Paragraph BulletParagraph(string text) =>
-            new(new Drawing.ParagraphProperties(
-                    new Drawing.BulletFont { Typeface = "Arial" },
-                    new Drawing.CharacterBullet { Char = "•" }),
-                Run(text, 1800, bold: false, accent: false));
-
-        private static Drawing.Run Run(string text, int size, bool bold, bool accent)
-        {
-            var rPr = new Drawing.RunProperties { Language = "en-US", FontSize = size, Bold = bold };
-            if (accent) rPr.Append(new Drawing.SolidFill(new Drawing.SchemeColor { Val = Drawing.SchemeColorValues.Accent1 }));
-            return new Drawing.Run(rPr, new Drawing.Text(text));
-        }
-
-        private static void AddPicture(SlidePart slidePart, ShapeTree tree, string imagePath)
-        {
-            var imagePart = slidePart.AddImagePart(GetImagePartType(imagePath));
-            using (var fs = File.OpenRead(imagePath)) imagePart.FeedData(fs);
-            var relId = slidePart.GetIdOfPart(imagePart);
-
-            double ar;
-            using (var fs = File.OpenRead(imagePath))
-            {
-                var info = Image.Identify(fs);
-                ar = (double)info.Width / info.Height;
-            }
-            long w = ImageMax, h = (long)(ImageMax / ar);
-            if (h > ImageMax) { h = ImageMax; w = (long)(ImageMax * ar); }
-
-            tree.Append(new Picture(
-                new NonVisualPictureProperties(
-                    new NonVisualDrawingProperties { Id = 5, Name = Path.GetFileName(imagePath) },
-                    new NonVisualPictureDrawingProperties(new Drawing.PictureLocks { NoChangeAspect = true }),
-                    new ApplicationNonVisualDrawingProperties()),
-                new Drawing.BlipFill(
-                    new Drawing.Blip { Embed = relId, CompressionState = Drawing.BlipCompressionValues.Print },
-                    new Drawing.Stretch(new Drawing.FillRectangle())),
-                new ShapeProperties(
-                    new Drawing.Transform2D(new Drawing.Offset { X = ImageX, Y = ImageY }, new Drawing.Extents { Cx = w, Cy = h }),
-                    new Drawing.PresetGeometry(new Drawing.AdjustValueList()) { Preset = Drawing.ShapeTypeValues.Rectangle })));
-        }
-
-        private static PartTypeInfo GetImagePartType(string path) =>
-            Path.GetExtension(path).ToLowerInvariant() switch
-            {
-                ".png" => ImagePartType.Png,
-                ".jpg" or ".jpeg" => ImagePartType.Jpeg,
-                ".gif" => ImagePartType.Gif,
-                ".bmp" => ImagePartType.Bmp,
-                _ => throw new InvalidOperationException($"Unsupported image type for '{path}'. Use png, jpg, gif or bmp.")
-            };
-
-        // ---------- Outline extraction + in-place fix ----------
-
-        private static string ExtractOutline(string hostPath)
-        {
-            using var doc = PresentationDocument.Open(hostPath, false);
-            var slides = doc.PresentationPart!.SlideParts.ToList();
-            var sb = new StringBuilder();
-            for (int i = 0; i < slides.Count; i++)
-            {
-                sb.Append($"Slide {i + 1}: ");
-                sb.AppendLine(GetTitleText(slides[i]) ?? "(no title)");
-                foreach (var b in GetBulletTexts(slides[i]))
-                    sb.AppendLine("  - " + b);
-            }
-            return sb.ToString();
-        }
-
-        private static string? GetTitleText(SlidePart slidePart)
-        {
-            foreach (var shape in slidePart.Slide?.Descendants<Shape>() ?? Enumerable.Empty<Shape>())
-                if (IsTitleType(PlaceholderType(shape)))
-                    return GetShapeText(shape);
-            return null;
-        }
-
-        private static List<string> GetBulletTexts(SlidePart slidePart)
-        {
-            var result = new List<string>();
-            foreach (var shape in slidePart.Slide?.Descendants<Shape>() ?? Enumerable.Empty<Shape>())
-                if (PlaceholderType(shape) == PlaceholderValues.Body)
-                    foreach (var line in GetShapeText(shape).Split('\n'))
-                        if (!string.IsNullOrWhiteSpace(line)) result.Add(line.Trim());
-            return result;
-        }
-
-        private static string GetShapeText(Shape shape)
-        {
-            var body = shape.TextBody;
-            if (body == null) return "";
-            return string.Join("\n", body.Elements<Drawing.Paragraph>()
-                .Select(p => string.Concat(p.Elements<Drawing.Run>().Select(r => r.Text?.Text ?? "")))
-                .Where(s => !string.IsNullOrWhiteSpace(s)));
-        }
-
-        private static PlaceholderValues? PlaceholderType(Shape shape) =>
-            shape.NonVisualShapeProperties?.ApplicationNonVisualDrawingProperties
-                ?.GetFirstChild<PlaceholderShape>()?.Type?.Value;
-
-        private static bool IsTitleType(PlaceholderValues? type) =>
-            type == PlaceholderValues.Title || type == PlaceholderValues.CenteredTitle;
-
-        private static void ApplyDeckInPlace(string hostPath, DeckOutline deck)
-        {
-            using var doc = PresentationDocument.Open(hostPath, true);
-            var presPart = doc.PresentationPart!;
-            var slideParts = presPart.SlideParts.ToList();
-            var common = Math.Min(slideParts.Count, deck.Slides.Count);
-            for (int i = 0; i < common; i++) SetSlideText(slideParts[i], deck.Slides[i]);
-
-            var contentLayout = FindContentLayout(presPart);
-            for (int i = common; i < deck.Slides.Count; i++) AppendSlide(presPart, contentLayout, deck.Slides[i]);
-            for (int i = slideParts.Count - 1; i >= deck.Slides.Count; i--) RemoveSlide(presPart, slideParts[i]);
-
-            presPart.Presentation!.Save();
-        }
-
-        private static void SetSlideText(SlidePart slidePart, DeckSlide slide)
-        {
-            foreach (var shape in slidePart.Slide?.Descendants<Shape>() ?? Enumerable.Empty<Shape>())
-            {
-                var type = PlaceholderType(shape);
-                if (IsTitleType(type)) SetShapeText(shape, new[] { slide.Title });
-                else if (type == PlaceholderValues.Body) SetShapeText(shape, slide.Bullets);
-            }
-        }
-
-        private static void SetShapeText(Shape shape, IReadOnlyList<string> lines)
-        {
-            var body = shape.TextBody;
-            if (body == null) return;
-            body.RemoveAllChildren<Drawing.Paragraph>();
-            foreach (var line in lines) body.Append(BulletParagraph(line));
-            if (lines.Count == 0) body.Append(new Drawing.Paragraph(new Drawing.EndParagraphRunProperties()));
-        }
-
-        private static SlideLayoutPart? FindContentLayout(PresentationPart presPart)
-        {
-            foreach (var master in presPart.SlideMasterParts)
-                foreach (var layout in master.SlideLayoutParts)
-                    if (layout.SlideLayout?.CommonSlideData?.Name?.Value is string n && n.Contains("Title and Content"))
-                        return layout;
-            return presPart.SlideMasterParts.FirstOrDefault()?.SlideLayoutParts.FirstOrDefault();
-        }
-
-        private static void AppendSlide(PresentationPart presPart, SlideLayoutPart? layout, DeckSlide slide)
-        {
-            var slidePart = presPart.AddNewPart<SlidePart>()!;
-            if (layout != null) slidePart.AddPart(layout);
-            slidePart.Slide = BuildContentSlide(slide, null, slidePart);
-            slidePart.Slide.Save();
-            var maxId = presPart.Presentation!.SlideIdList!.Elements<SlideId>().Select(x => x.Id!.Value).DefaultIfEmpty(255U).Max();
-            presPart.Presentation.SlideIdList.Append(new SlideId { Id = maxId + 1, RelationshipId = presPart.GetIdOfPart(slidePart) });
-            presPart.Presentation.Save();
-        }
-
-        private static void RemoveSlide(PresentationPart presPart, SlidePart slidePart)
-        {
-            var relId = presPart.GetIdOfPart(slidePart);
-            presPart.Presentation!.SlideIdList!.Elements<SlideId>()
-                .FirstOrDefault(x => x.RelationshipId!.Value == relId)?.Remove();
-            presPart.DeletePart(slidePart);
-            presPart.Presentation.Save();
+            public bool Clear { get; set; }
+            public List<string>? Explanation { get; set; }
         }
 
         // ---------- File helpers ----------
@@ -604,19 +626,23 @@ namespace AIOrchestrator.API
         private static string Truncate(string value, int max) =>
             value.Length <= max ? value : value[..max] + "…";
 
-        // ---------- Deck outline JSON model ----------
+        // ---------- Deck template (embedded resource: Assets/template.html) ----------
 
-        private sealed class DeckOutline
+        private static readonly Lazy<string> TemplateHtmlLazy = new(() =>
         {
-            public string Title { get; set; } = "";
-            public List<DeckSlide> Slides { get; set; } = new();
-        }
+            var assembly = typeof(PresentationPlugin).Assembly;
+            var name = assembly.GetManifestResourceNames()
+                .FirstOrDefault(n => n.EndsWith(".template.html", StringComparison.OrdinalIgnoreCase))
+                ?? throw new InvalidOperationException("Embedded resource 'Assets/template.html' not found in PresentationPlugin.");
+            using var stream = assembly.GetManifestResourceStream(name);
+            if (stream == null)
+                throw new InvalidOperationException("Embedded resource 'Assets/template.html' not found in PresentationPlugin.");
+            using var reader = new StreamReader(stream);
+            return reader.ReadToEnd();
+        }, LazyThreadSafetyMode.ExecutionAndPublication);
 
-        private sealed class DeckSlide
-        {
-            public string Title { get; set; } = "";
-            public List<string> Bullets { get; set; } = new();
-            public int? Image { get; set; }
-        }
+        /// <summary>Deck template loaded from the embedded resource (Assets/template.html), so the
+        /// HTML source of truth lives in a real file and ships inside the plugin assembly.</summary>
+        internal static string TemplateHtml => TemplateHtmlLazy.Value;
     }
 }

@@ -1,0 +1,117 @@
+<!-- Vaporwave animated background: synthwave sun, perspective grid and wireframes -->
+<style>
+    .bg-vapor {
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        overflow: hidden;
+        pointer-events: none;
+        background: linear-gradient(180deg, #1a0b3b 0%, #5c2a7e 34%, #d84a8a 58%, #ff9e5e 74%, #ffd08a 100%);
+    }
+    .bg-vapor canvas { display: block; width: 100%; height: 100%; }
+</style>
+<script>
+    (function () {
+        'use strict';
+        document.addEventListener('DOMContentLoaded', function () {
+            var reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+            var layer = document.createElement('div');
+            layer.className = 'bg-vapor';
+            var cv = document.createElement('canvas');
+            layer.appendChild(cv);
+            document.body.appendChild(layer);
+            var ctx = cv.getContext('2d');
+            var W = 0, H = 0, t = 0, stars = [];
+
+            function resize() {
+                var dpr = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth; H = window.innerHeight;
+                cv.width = W * dpr; cv.height = H * dpr;
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                stars = [];
+                var n = Math.round(W * H / 9000);
+                for (var i = 0; i < n; i++) stars.push({
+                    x: Math.random() * W, y: Math.random() * H * .55,
+                    r: Math.random() * 1.5 + .4, ph: Math.random() * 6.283
+                });
+            }
+
+            function frame() {
+                t += reduced ? 0 : .016;
+                ctx.clearRect(0, 0, W, H);
+                var horizon = H * .6;
+                // twinkling stars
+                for (var i = 0; i < stars.length; i++) {
+                    var st = stars[i];
+                    var a = .4 + .6 * Math.abs(Math.sin(t * 2 + st.ph));
+                    ctx.fillStyle = 'rgba(255,255,255,' + a + ')';
+                    ctx.beginPath(); ctx.arc(st.x, st.y, st.r, 0, 6.283); ctx.fill();
+                }
+                // sun with scanline stripes
+                var sunR = Math.min(W, H) * .16;
+                var sunX = W * .5, sunY = horizon;
+                var sg = ctx.createLinearGradient(0, sunY - sunR, 0, sunY + sunR * .4);
+                sg.addColorStop(0, '#ffe27a'); sg.addColorStop(1, '#ff5c8a');
+                ctx.fillStyle = sg;
+                ctx.beginPath();
+                ctx.arc(sunX, sunY - sunR * .2, sunR, Math.PI, 0);
+                ctx.lineTo(sunX + sunR, sunY + sunR * .4);
+                ctx.lineTo(sunX - sunR, sunY + sunR * .4);
+                ctx.closePath();
+                ctx.fill();
+                ctx.save();
+                ctx.beginPath();
+                ctx.rect(0, 0, W, horizon);
+                ctx.clip();
+                for (var sl = 0; sl < 6; sl++) {
+                    var yy = sunY - sunR * .2 + sl * sunR * .16;
+                    ctx.clearRect(sunX - sunR, yy, sunR * 2, sunR * .045);
+                }
+                ctx.restore();
+                // perspective grid floor
+                var speed = reduced ? 0 : t * 120;
+                ctx.strokeStyle = 'rgba(255,77,170,.55)';
+                ctx.lineWidth = 2;
+                var steps = 14;
+                for (var g = 0; g < steps; g++) {
+                    var z = ((g + speed / 22) % steps) / steps;
+                    var y = horizon + z * z * (H - horizon);
+                    ctx.beginPath();
+                    ctx.moveTo(0, y); ctx.lineTo(W, y);
+                    ctx.stroke();
+                }
+                ctx.strokeStyle = 'rgba(0,229,255,.5)';
+                var cols = 12;
+                for (var v = -cols; v <= cols; v++) {
+                    ctx.beginPath();
+                    ctx.moveTo(W * .5, horizon);
+                    ctx.lineTo(W * .5 + v * W * .06, H);
+                    ctx.stroke();
+                }
+                // floating wireframe pyramids
+                var pyr = [[W * .18, H * .3, 90], [W * .82, H * .24, 70], [W * .5, H * .16, 55]];
+                for (var q = 0; q < pyr.length; q++) {
+                    var px = pyr[q][0] + Math.sin(t * .8 + q * 2) * 18;
+                    var py = pyr[q][1] + Math.cos(t * .6 + q) * 10;
+                    var pr = pyr[q][2];
+                    ctx.strokeStyle = q % 2 ? 'rgba(0,229,255,.75)' : 'rgba(255,77,170,.75)';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.moveTo(px, py - pr);
+                    ctx.lineTo(px - pr * .9, py + pr * .55);
+                    ctx.lineTo(px + pr * .9, py + pr * .55);
+                    ctx.closePath();
+                    ctx.moveTo(px, py - pr);
+                    ctx.lineTo(px, py + pr * .55);
+                    ctx.moveTo(px - pr * .9, py + pr * .55);
+                    ctx.lineTo(px + pr * .9, py + pr * .55);
+                    ctx.stroke();
+                }
+                requestAnimationFrame(frame);
+            }
+            window.addEventListener('resize', resize);
+            resize();
+            requestAnimationFrame(frame);
+        });
+    })();
+</script>

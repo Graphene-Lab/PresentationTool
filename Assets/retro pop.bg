@@ -1,0 +1,116 @@
+<!-- Retro Pop animated background: halftone, starburst and groovy shapes -->
+<style>
+    .bg-retropop {
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        overflow: hidden;
+        pointer-events: none;
+        background: #ffd447;
+    }
+    body.dark .bg-retropop { background: #2a1a33; }
+    .bg-retropop canvas { display: block; width: 100%; height: 100%; }
+    .bg-retropop::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(rgba(0, 0, 0, .16) 1.4px, transparent 1.6px);
+        background-size: 14px 14px;
+    }
+</style>
+<script>
+    (function () {
+        'use strict';
+        document.addEventListener('DOMContentLoaded', function () {
+            var reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+            var layer = document.createElement('div');
+            layer.className = 'bg-retropop';
+            var cv = document.createElement('canvas');
+            layer.appendChild(cv);
+            document.body.appendChild(layer);
+            var ctx = cv.getContext('2d');
+            var W = 0, H = 0, t = 0;
+            var dark = document.body.classList.contains('dark');
+
+            function palette() {
+                return dark
+                    ? ['#ff2e88', '#ffd447', '#21d4a0', '#4aa8ff', '#ff6b35']
+                    : ['#ff2e88', '#ff6b35', '#1d9bf0', '#21d4a0', '#8a3ffc'];
+            }
+
+            function resize() {
+                var dpr = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth; H = window.innerHeight;
+                cv.width = W * dpr; cv.height = H * dpr;
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            }
+
+            function ring(cx, cy, r, w, col, a) {
+                ctx.strokeStyle = col;
+                ctx.globalAlpha = a;
+                ctx.lineWidth = w;
+                ctx.beginPath(); ctx.arc(cx, cy, r, 0, 6.283); ctx.stroke();
+                ctx.globalAlpha = 1;
+            }
+
+            function frame() {
+                t += reduced ? 0 : .02;
+                var cols = palette();
+                ctx.clearRect(0, 0, W, H);
+                var cx = W * .5, cy = H * .46;
+                // rotating starburst
+                ctx.save();
+                ctx.translate(cx, cy);
+                ctx.rotate(t * .4);
+                var rays = 12;
+                for (var i = 0; i < rays; i++) {
+                    ctx.rotate(Math.PI * 2 / rays);
+                    ctx.fillStyle = cols[i % cols.length];
+                    ctx.beginPath();
+                    ctx.moveTo(0, 0);
+                    ctx.lineTo(Math.min(W, H) * .11, -Math.min(W, H) * .028);
+                    ctx.lineTo(Math.min(W, H) * .11, Math.min(W, H) * .028);
+                    ctx.closePath();
+                    ctx.fill();
+                }
+                ctx.restore();
+                // pulse rings
+                for (var k = 0; k < 4; k++) {
+                    var pr = (t * 40 + k * 60) % 260;
+                    ring(cx, cy, 60 + pr, 6, cols[(k + 1) % cols.length], .5 * (1 - pr / 260));
+                }
+                // bouncing circles
+                var b1x = W * .22 + Math.sin(t * 1.1) * W * .12;
+                var b1y = H * .2 + Math.cos(t * 1.4) * H * .08;
+                var b2x = W * .8 + Math.sin(t * .9 + 2) * W * .1;
+                var b2y = H * .78 + Math.cos(t * 1.2 + 1) * H * .1;
+                var b3x = W * .12 + Math.sin(t * 1.3 + 4) * W * .08;
+                var b3y = H * .85 + Math.cos(t * .8) * H * .07;
+                ctx.fillStyle = cols[0];
+                ctx.beginPath(); ctx.arc(b1x, b1y, Math.min(W, H) * .05, 0, 6.283); ctx.fill();
+                ctx.fillStyle = cols[2];
+                ctx.beginPath(); ctx.arc(b2x, b2y, Math.min(W, H) * .06, 0, 6.283); ctx.fill();
+                ctx.fillStyle = cols[1];
+                ctx.beginPath(); ctx.arc(b3x, b3y, Math.min(W, H) * .04, 0, 6.283); ctx.fill();
+                // groovy waves
+                ctx.strokeStyle = dark ? 'rgba(255,255,255,.25)' : 'rgba(0,0,0,.22)';
+                ctx.lineWidth = 3;
+                for (var wv = 0; wv < 3; wv++) {
+                    ctx.beginPath();
+                    for (var x = 0; x <= W; x += 6) {
+                        var y = H - 26 - wv * 22 + Math.sin(x * .012 + t * 2.2 + wv * 1.4) * 8;
+                        if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+                    }
+                    ctx.stroke();
+                }
+                requestAnimationFrame(frame);
+            }
+
+            var mo = new MutationObserver(function () { dark = document.body.classList.contains('dark'); });
+            mo.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+            window.addEventListener('resize', resize);
+            resize();
+            requestAnimationFrame(frame);
+        });
+    })();
+</script>

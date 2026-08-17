@@ -1,0 +1,119 @@
+<!-- Glassmorphism animated background: frosted shards over color haze -->
+<style>
+    .bg-glass {
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        overflow: hidden;
+        pointer-events: none;
+        background: linear-gradient(135deg, #dce7ff 0%, #f2e6ff 45%, #ffe6f0 100%);
+    }
+    body.dark .bg-glass { background: linear-gradient(135deg, #0e1330 0%, #241a3d 55%, #331a2e 100%); }
+    .bg-glass canvas { display: block; width: 100%; height: 100%; position: absolute; inset: 0; }
+    .bg-glass .shard {
+        position: absolute;
+        border-radius: 1.4rem;
+        background: rgba(255, 255, 255, .18);
+        border: 1px solid rgba(255, 255, 255, .45);
+        box-shadow: 0 1.5rem 3rem rgba(80, 60, 140, .18), inset 0 0 1.5rem rgba(255, 255, 255, .25);
+        backdrop-filter: blur(10px) saturate(1.4);
+        -webkit-backdrop-filter: blur(10px) saturate(1.4);
+        animation: bgglass-float 11s ease-in-out infinite alternate;
+    }
+    body.dark .bg-glass .shard {
+        background: rgba(255, 255, 255, .07);
+        border-color: rgba(255, 255, 255, .18);
+        box-shadow: 0 1.5rem 3rem rgba(0, 0, 0, .4), inset 0 0 1.5rem rgba(255, 255, 255, .12);
+    }
+    .bg-glass .shard::after {
+        content: "";
+        position: absolute;
+        left: 10%;
+        top: 6%;
+        width: 40%;
+        height: 22%;
+        border-radius: 1rem;
+        background: linear-gradient(105deg, transparent 20%, rgba(255, 255, 255, .55) 50%, transparent 80%);
+        animation: bgglass-shine 6s ease-in-out infinite;
+    }
+    @keyframes bgglass-float {
+        from { transform: translateY(-18px) rotate(-4deg) scale(1); }
+        to { transform: translateY(18px) rotate(5deg) scale(1.04); }
+    }
+    @keyframes bgglass-shine {
+        0%, 55% { left: -40%; opacity: 0; }
+        75% { left: 110%; opacity: 1; }
+        100% { left: 110%; opacity: 0; }
+    }
+    .bg-glass .s1 { width: 22vw; height: 30vh; left: 6%; top: 12%; animation-duration: 12s; }
+    .bg-glass .s2 { width: 16vw; height: 24vh; right: 8%; top: 16%; animation-duration: 9s; animation-delay: 1.5s; }
+    .bg-glass .s3 { width: 18vw; height: 26vh; left: 16%; bottom: 8%; animation-duration: 14s; animation-delay: .8s; }
+    .bg-glass .s4 { width: 24vw; height: 20vh; right: 12%; bottom: 12%; animation-duration: 10s; animation-delay: 2.4s; }
+</style>
+<script>
+    (function () {
+        'use strict';
+        document.addEventListener('DOMContentLoaded', function () {
+            var reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+            var layer = document.createElement('div');
+            layer.className = 'bg-glass';
+            layer.innerHTML =
+                '<div class="shard s1"></div><div class="shard s2"></div>' +
+                '<div class="shard s3"></div><div class="shard s4"></div>';
+            var cv = document.createElement('canvas');
+            layer.appendChild(cv);
+            document.body.appendChild(layer);
+            var ctx = cv.getContext('2d');
+            var W = 0, H = 0, blobs = [], t = 0;
+            var dark = document.body.classList.contains('dark');
+
+            function rgba(c, a) { return 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + a + ')'; }
+
+            function palette() {
+                return dark
+                    ? [[88, 101, 242], [255, 92, 205], [0, 229, 255], [124, 77, 255], [255, 170, 60], [0, 200, 160]]
+                    : [[122, 160, 255], [255, 150, 220], [140, 220, 255], [170, 150, 255], [255, 200, 130], [120, 230, 200]];
+            }
+
+            function resize() {
+                var dpr = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth; H = window.innerHeight;
+                cv.width = W * dpr; cv.height = H * dpr;
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                blobs = [];
+                for (var i = 0; i < 6; i++) blobs.push({
+                    x: Math.random() * W, y: Math.random() * H,
+                    r: Math.min(W, H) * (0.22 + Math.random() * 0.25),
+                    vx: (Math.random() - .5) * .5, vy: (Math.random() - .5) * .5,
+                    c: i, ph: Math.random() * 6.283
+                });
+            }
+
+            function frame() {
+                t += reduced ? 0 : .005;
+                var cols = palette();
+                ctx.clearRect(0, 0, W, H);
+                ctx.globalCompositeOperation = 'lighter';
+                for (var i = 0; i < blobs.length; i++) {
+                    var b = blobs[i];
+                    if (!reduced) { b.x += b.vx; b.y += b.vy; }
+                    if (b.x < -b.r) b.x = W + b.r; if (b.x > W + b.r) b.x = -b.r;
+                    if (b.y < -b.r) b.y = H + b.r; if (b.y > H + b.r) b.y = -b.r;
+                    var r = b.r * (1 + Math.sin(t * 8 + b.ph) * .1);
+                    var g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, r);
+                    g.addColorStop(0, rgba(cols[b.c % cols.length], dark ? .5 : .4));
+                    g.addColorStop(1, rgba(cols[b.c % cols.length], 0));
+                    ctx.fillStyle = g;
+                    ctx.beginPath(); ctx.arc(b.x, b.y, r, 0, 6.283); ctx.fill();
+                }
+                requestAnimationFrame(frame);
+            }
+
+            var mo = new MutationObserver(function () { dark = document.body.classList.contains('dark'); });
+            mo.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+            window.addEventListener('resize', resize);
+            resize();
+            requestAnimationFrame(frame);
+        });
+    })();
+</script>

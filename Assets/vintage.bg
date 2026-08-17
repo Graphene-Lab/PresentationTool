@@ -1,0 +1,112 @@
+<!-- Vintage animated background: old film grain, dust motes and light leaks -->
+<style>
+    .bg-vintage {
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        overflow: hidden;
+        pointer-events: none;
+        background: radial-gradient(ellipse at 50% 40%, #efe0bd 0%, #d9c296 45%, #8a6b45 100%);
+    }
+    body.dark .bg-vintage { background: radial-gradient(ellipse at 50% 40%, #5b4a33 0%, #3c3123 55%, #191410 100%); }
+    .bg-vintage canvas { display: block; width: 100%; height: 100%; }
+    .bg-vintage .leak {
+        position: absolute;
+        left: -30%;
+        width: 30%;
+        height: 100%;
+        background: linear-gradient(90deg, transparent, rgba(255, 220, 150, .28), rgba(255, 190, 120, .12), transparent);
+        filter: blur(12px);
+        transform: skewX(-8deg);
+        opacity: 0;
+        animation: bgv-leak 9s ease-in-out infinite;
+    }
+    @keyframes bgv-leak {
+        0%, 86% { opacity: 0; left: -30%; }
+        88% { opacity: .9; left: 30%; }
+        92% { opacity: .5; left: 70%; }
+        96%, 100% { opacity: 0; left: 110%; }
+    }
+    .bg-vintage::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background:
+            radial-gradient(ellipse at center, transparent 48%, rgba(40, 22, 8, .55) 100%),
+            repeating-linear-gradient(0deg, rgba(0, 0, 0, .05) 0 1px, transparent 1px 3px);
+        animation: bgv-flicker 4s steps(2) infinite;
+    }
+    @keyframes bgv-flicker { 0%, 100% { opacity: 1; } 50% { opacity: .94; } }
+</style>
+<script>
+    (function () {
+        'use strict';
+        document.addEventListener('DOMContentLoaded', function () {
+            var reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+            var layer = document.createElement('div');
+            layer.className = 'bg-vintage';
+            var cv = document.createElement('canvas');
+            layer.appendChild(cv);
+            var leak = document.createElement('div');
+            leak.className = 'leak';
+            layer.appendChild(leak);
+            document.body.appendChild(layer);
+            var ctx = cv.getContext('2d');
+            var W = 0, H = 0, motes = [];
+            var noise = document.createElement('canvas');
+            var nctx = noise.getContext('2d');
+            noise.width = 160; noise.height = 160;
+            var nd = nctx.createImageData(160, 160);
+
+            function grain() {
+                for (var i = 0; i < nd.data.length; i += 4) {
+                    var v = (Math.random() - .5) * 120;
+                    nd.data[i] = 205 + v;
+                    nd.data[i + 1] = 170 + v;
+                    nd.data[i + 2] = 120 + v;
+                    nd.data[i + 3] = 18 + Math.random() * 22;
+                }
+                nctx.putImageData(nd, 0, 0);
+            }
+
+            function resize() {
+                var dpr = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth; H = window.innerHeight;
+                cv.width = W * dpr; cv.height = H * dpr;
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                var n = Math.round(W * H / 26000);
+                motes = [];
+                for (var i = 0; i < n; i++) motes.push({
+                    x: Math.random() * W, y: Math.random() * H,
+                    r: .5 + Math.random() * 2, ph: Math.random() * 6.283,
+                    vx: (Math.random() - .5) * .12, vy: -.08 - Math.random() * .2
+                });
+            }
+
+            var t = 0;
+            function frame() {
+                t += 1;
+                ctx.clearRect(0, 0, W, H);
+                if (!reduced) {
+                    for (var i = 0; i < motes.length; i++) {
+                        var m = motes[i];
+                        m.x += m.vx; m.y += m.vy + Math.sin(t * .02 + m.ph) * .1;
+                        if (m.y < -4) { m.y = H + 4; m.x = Math.random() * W; }
+                        if (m.x < -4) m.x = W + 4; if (m.x > W + 4) m.x = -4;
+                        var a = .18 + .25 * Math.abs(Math.sin(t * .03 + m.ph));
+                        ctx.fillStyle = 'rgba(255,238,200,' + a + ')';
+                        ctx.beginPath(); ctx.arc(m.x, m.y, m.r, 0, 6.283); ctx.fill();
+                    }
+                    if (t % 3 === 0) grain();
+                    ctx.globalAlpha = .6;
+                    ctx.drawImage(noise, 0, 0, W, H);
+                    ctx.globalAlpha = 1;
+                }
+                requestAnimationFrame(frame);
+            }
+            window.addEventListener('resize', resize);
+            resize();
+            requestAnimationFrame(frame);
+        });
+    })();
+</script>

@@ -1,0 +1,122 @@
+<!-- Biophilic Design animated background: forest light rays, leaves and bokeh -->
+<style>
+    .bg-bio {
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        overflow: hidden;
+        pointer-events: none;
+        background: linear-gradient(180deg, #1c3a2a 0%, #2e5c3c 45%, #467a4d 100%);
+    }
+    body.dark .bg-bio { background: linear-gradient(180deg, #0d1f16 0%, #173328 55%, #23442f 100%); }
+    .bg-bio canvas { display: block; width: 100%; height: 100%; }
+    .bg-bio .rays {
+        position: absolute;
+        inset: -20%;
+        background:
+            repeating-conic-gradient(from 60deg at 30% -10%, rgba(255, 244, 200, .10) 0deg 6deg, transparent 6deg 26deg);
+        filter: blur(14px);
+        animation: bgbio-rays 26s ease-in-out infinite alternate;
+    }
+    @keyframes bgbio-rays { from { transform: rotate(-3deg); opacity: .7; } to { transform: rotate(3deg); opacity: 1; } }
+    .bg-bio::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(ellipse at 30% 10%, transparent 40%, rgba(6, 18, 10, .5) 100%);
+    }
+</style>
+<script>
+    (function () {
+        'use strict';
+        document.addEventListener('DOMContentLoaded', function () {
+            var reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+            var layer = document.createElement('div');
+            layer.className = 'bg-bio';
+            var rays = document.createElement('div');
+            rays.className = 'rays';
+            layer.appendChild(rays);
+            var cv = document.createElement('canvas');
+            layer.appendChild(cv);
+            document.body.appendChild(layer);
+            var ctx = cv.getContext('2d');
+            var W = 0, H = 0, leaves = [], bokeh = [], t = 0;
+            var dark = document.body.classList.contains('dark');
+
+            function resize() {
+                var dpr = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth; H = window.innerHeight;
+                cv.width = W * dpr; cv.height = H * dpr;
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                var n = Math.round(W * H / 52000);
+                leaves = [];
+                for (var i = 0; i < n; i++) leaves.push({
+                    x: Math.random() * W, y: Math.random() * H,
+                    s: 8 + Math.random() * 14, r: Math.random() * 6.283, vr: (Math.random() - .5) * .02,
+                    vy: .25 + Math.random() * .7, sw: (Math.random() - .5) * .6,
+                    shade: 0.55 + Math.random() * 0.45
+                });
+                var b = Math.round(W * H / 36000);
+                bokeh = [];
+                for (var j = 0; j < b; j++) bokeh.push({
+                    x: Math.random() * W, y: Math.random() * H,
+                    r: 2 + Math.random() * 9, ph: Math.random() * 6.283, s: .2 + Math.random() * .8
+                });
+            }
+
+            function leaf(ctx, x, y, s, rot) {
+                ctx.save();
+                ctx.translate(x, y);
+                ctx.rotate(rot);
+                ctx.beginPath();
+                ctx.moveTo(0, -s);
+                ctx.quadraticCurveTo(s * .7, 0, 0, s);
+                ctx.quadraticCurveTo(-s * .7, 0, 0, -s);
+                ctx.closePath();
+                ctx.fill();
+                ctx.restore();
+            }
+
+            function frame() {
+                t += reduced ? 0 : .016;
+                ctx.clearRect(0, 0, W, H);
+                ctx.globalCompositeOperation = 'lighter';
+                for (var i = 0; i < bokeh.length; i++) {
+                    var b = bokeh[i];
+                    if (!reduced) {
+                        b.y -= b.s * .5;
+                        b.x += Math.sin(t * 1.2 + b.ph) * .3;
+                        if (b.y < -12) { b.y = H + 12; b.x = Math.random() * W; }
+                    }
+                    var a = .06 + .1 * Math.abs(Math.sin(t * 2 + b.ph));
+                    var g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.r);
+                    g.addColorStop(0, 'rgba(255,244,200,' + a + ')');
+                    g.addColorStop(1, 'rgba(255,244,200,0)');
+                    ctx.fillStyle = g;
+                    ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, 6.283); ctx.fill();
+                }
+                ctx.globalCompositeOperation = 'source-over';
+                for (var j = 0; j < leaves.length; j++) {
+                    var l = leaves[j];
+                    if (!reduced) {
+                        l.y += l.vy;
+                        l.x += Math.sin(t * 1.4 + j) * l.sw;
+                        l.r += l.vr;
+                        if (l.y > H + 30) { l.y = -30; l.x = Math.random() * W; }
+                    }
+                    ctx.fillStyle = dark
+                        ? 'rgba(190,235,170,' + l.shade * .55 + ')'
+                        : 'rgba(226,250,205,' + l.shade * .75 + ')';
+                    leaf(ctx, l.x, l.y, l.s, l.r);
+                }
+                requestAnimationFrame(frame);
+            }
+
+            var mo = new MutationObserver(function () { dark = document.body.classList.contains('dark'); });
+            mo.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+            window.addEventListener('resize', resize);
+            resize();
+            requestAnimationFrame(frame);
+        });
+    })();
+</script>

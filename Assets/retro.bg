@@ -1,0 +1,90 @@
+<!-- Retro animated background: phosphor pixel rain on a CRT screen -->
+<style>
+    .bg-retro {
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        overflow: hidden;
+        pointer-events: none;
+        background: #050805;
+    }
+    .bg-retro canvas { display: block; width: 100%; height: 100%; }
+    .bg-retro::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background:
+            repeating-linear-gradient(0deg, rgba(0, 0, 0, .28) 0 2px, transparent 2px 5px),
+            radial-gradient(ellipse at center, transparent 55%, rgba(0, 0, 0, .55) 100%);
+    }
+    .bg-retro .roll {
+        position: absolute;
+        left: 0;
+        width: 100%;
+        height: 8%;
+        background: rgba(51, 255, 102, .06);
+        animation: bgretro-roll 7s linear infinite;
+    }
+    @keyframes bgretro-roll { from { top: -10%; } to { top: 110%; } }
+</style>
+<script>
+    (function () {
+        'use strict';
+        document.addEventListener('DOMContentLoaded', function () {
+            var reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+            var layer = document.createElement('div');
+            layer.className = 'bg-retro';
+            var cv = document.createElement('canvas');
+            layer.appendChild(cv);
+            var roll = document.createElement('div');
+            roll.className = 'roll';
+            layer.appendChild(roll);
+            document.body.appendChild(layer);
+            var ctx = cv.getContext('2d');
+            var W = 0, H = 0, cols = [], cell = 12, t = 0;
+
+            function resize() {
+                var dpr = Math.min(window.devicePixelRatio || 1, 2);
+                W = window.innerWidth; H = window.innerHeight;
+                cv.width = W * dpr; cv.height = H * dpr;
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                ctx.fillStyle = '#050805';
+                ctx.fillRect(0, 0, W, H);
+                cell = Math.max(10, Math.round(Math.min(W, H) / 70));
+                var n = Math.ceil(W / cell);
+                cols = [];
+                for (var i = 0; i < n; i++) cols.push({
+                    x: i * cell, y: Math.random() * H * .5,
+                    speed: 1.5 + Math.random() * 3, len: 6 + Math.floor(Math.random() * 14)
+                });
+            }
+
+            function glyph() { return String.fromCharCode(0x30 + Math.floor(Math.random() * 70)); }
+
+            function frame() {
+                t += 1;
+                // fade trail instead of clearing
+                ctx.fillStyle = 'rgba(5,8,5,.22)';
+                ctx.fillRect(0, 0, W, H);
+                ctx.font = (cell * .8) + 'px monospace';
+                for (var i = 0; i < cols.length; i++) {
+                    var c = cols[i];
+                    if (!reduced) c.y += c.speed;
+                    if (c.y > H + 30) { c.y = -20; c.len = 6 + Math.floor(Math.random() * 14); }
+                    ctx.fillStyle = 'rgba(215,255,225,.95)';
+                    ctx.fillText(glyph(), c.x, c.y);
+                    ctx.fillStyle = 'rgba(51,255,102,.5)';
+                    for (var k = 1; k < c.len; k++) {
+                        var gy = c.y - k * cell;
+                        if (gy < -10) break;
+                        ctx.fillText(glyph(), c.x, gy);
+                    }
+                }
+                requestAnimationFrame(frame);
+            }
+            window.addEventListener('resize', resize);
+            resize();
+            requestAnimationFrame(frame);
+        });
+    })();
+</script>

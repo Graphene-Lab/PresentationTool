@@ -1,0 +1,103 @@
+<!-- Brutalist animated background: raw concrete, hard-edged blocks and glitch -->
+<style>
+    .bg-brutal {
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        overflow: hidden;
+        pointer-events: none;
+        background:
+            repeating-linear-gradient(90deg, rgba(0, 0, 0, .05) 0 2px, transparent 2px 60px),
+            repeating-linear-gradient(0deg, rgba(0, 0, 0, .05) 0 2px, transparent 2px 60px),
+            #c9c4bb;
+    }
+    body.dark .bg-brutal {
+        background:
+            repeating-linear-gradient(90deg, rgba(255, 255, 255, .04) 0 2px, transparent 2px 60px),
+            repeating-linear-gradient(0deg, rgba(255, 255, 255, .04) 0 2px, transparent 2px 60px),
+            #23211e;
+    }
+    .bg-brutal .block {
+        position: absolute;
+        border: 3px solid #101010;
+        animation-duration: 6s;
+        animation-iteration-count: infinite;
+        animation-timing-function: steps(10, end);
+    }
+    body.dark .bg-brutal .block { border-color: #e8e6e1; }
+    .bg-brutal .b1 { width: 22%; height: 34%; background: #e23b2e; left: -24%; top: 8%; animation-name: bgbrutal-slide1; }
+    .bg-brutal .b2 { width: 16%; height: 24%; background: #f2c230; right: -18%; bottom: 6%; animation-name: bgbrutal-slide2; animation-delay: 1.2s; }
+    .bg-brutal .b3 { width: 9%; height: 60%; background: #101010; left: 42%; top: -62%; animation-name: bgbrutal-slide3; animation-delay: 2.4s; }
+    body.dark .bg-brutal .b3 { background: #e8e6e1; }
+    @keyframes bgbrutal-slide1 { 0% { left: -24%; } 30%, 62% { left: 12%; } 96%, 100% { left: -24%; } }
+    @keyframes bgbrutal-slide2 { 0% { right: -18%; } 34%, 68% { right: 14%; } 98%, 100% { right: -18%; } }
+    @keyframes bgbrutal-slide3 { 0% { top: -62%; } 40%, 70% { top: 24%; } 100% { top: -62%; } }
+    .bg-brutal .scan {
+        position: absolute;
+        inset: 0;
+        background: repeating-linear-gradient(0deg, rgba(0, 0, 0, .12) 0 2px, transparent 2px 5px);
+        animation: bgbrutal-flicker 1.4s steps(2) infinite;
+    }
+    body.dark .bg-brutal .scan { background: repeating-linear-gradient(0deg, rgba(255, 255, 255, .06) 0 2px, transparent 2px 5px); }
+    @keyframes bgbrutal-flicker { 0%, 100% { opacity: .85; } 50% { opacity: 1; } }
+    .bg-brutal .glitch {
+        position: absolute;
+        left: 0;
+        width: 100%;
+        height: 6%;
+        opacity: 0;
+        background: linear-gradient(90deg, #e23b2e 0 40%, transparent 40% 55%, #f2c230 55% 75%, transparent 75%);
+        mix-blend-mode: screen;
+    }
+    body.dark .bg-brutal .glitch { mix-blend-mode: overlay; }
+    .bg-brutal .stamp {
+        position: absolute;
+        right: 4%;
+        bottom: 5%;
+        font: 700 2.4rem/1 monospace;
+        letter-spacing: .2em;
+        color: #101010;
+        opacity: .22;
+        animation: bgbrutal-flicker 3s steps(2) infinite;
+    }
+    body.dark .bg-brutal .stamp { color: #e8e6e1; }
+</style>
+<script>
+    (function () {
+        'use strict';
+        document.addEventListener('DOMContentLoaded', function () {
+            var reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+            var layer = document.createElement('div');
+            layer.className = 'bg-brutal';
+            layer.innerHTML =
+                '<div class="block b1"></div><div class="block b2"></div><div class="block b3"></div>' +
+                '<div class="scan"></div><div class="stamp">RAW FORM</div>';
+            document.body.appendChild(layer);
+            if (reduced) return;
+            var glitches = [];
+            for (var i = 0; i < 3; i++) {
+                var g = document.createElement('div');
+                g.className = 'glitch';
+                layer.appendChild(g);
+                glitches.push(g);
+            }
+            function flash() {
+                for (var i = 0; i < glitches.length; i++) {
+                    var g = glitches[i];
+                    g.style.top = (Math.random() * 90) + '%';
+                    g.style.opacity = (Math.random() * .5 + .3).toFixed(2);
+                    g.style.transition = 'none';
+                    g.style.transform = 'translateX(' + (Math.random() * 30 - 15) + 'px)';
+                    (function (el) {
+                        setTimeout(function () {
+                            el.style.opacity = 0;
+                            el.style.transition = 'opacity .3s steps(4)';
+                        }, 60 + Math.random() * 120);
+                    })(g);
+                }
+                setTimeout(flash, 700 + Math.random() * 2600);
+            }
+            setTimeout(flash, 500);
+        });
+    })();
+</script>
