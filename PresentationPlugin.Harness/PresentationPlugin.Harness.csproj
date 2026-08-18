@@ -14,4 +14,8 @@
     <ProjectReference Include="..\..\AIOrchestrator\AIOrchestrator.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="Assets\images\*.png" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

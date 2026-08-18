@@ -33,12 +33,19 @@ static class Program
 
         Log.IsEnabled = true;
         _workspace = Path.Combine(Path.GetTempPath(), "PresentationPlugin.Tests-workspace");
-        if (Directory.Exists(_workspace)) Directory.Delete(_workspace, recursive: true);
+        try
+        {
+            if (Directory.Exists(_workspace)) Directory.Delete(_workspace, recursive: true);
+        }
+        catch (Exception ex)
+        {
+        }
         Directory.CreateDirectory(_workspace);
         Setup.SkipIndexingOnStartup = true;
         Setup.DocumentsPath = _workspace;
         Setup.ProviderConfig = ProviderConfigs.Get(_providerName);
         StageIcons();
+        StageImages();
 
         File.WriteAllText(ResultsFile, $"RUN {DateTime.Now:HH:mm:ss} provider={_providerName}\n");
         WriteResult("STARTED");
@@ -51,14 +58,31 @@ static class Program
         {
             var tool = new PresentationPlugin();
             var r = tool.CreatePresentation(
-                "Present 'Fiori Coffee', an Italian specialty coffee startup. " +
-                "4 slides: cover, the product, the market, the team.",
-                contextText: "Fiori Coffee was founded in 2015 in Milan by Anna Bianchi and Marco Rossi, starting with 3 employees. " +
-                "Products: single-origin espresso blends, cold brew cans, and a monthly coffee bean subscription. " +
-                "A roastery opened in 2018 in the Navigli district, and by 2021 the company had two retail shops in Milan. " +
-                "Market: Italian specialty coffee grows about 12% per year; competitors are small independent roasters. " +
-                "Team: 45 employees in 2026 across roasting, barista, sales and logistics; Anna is CEO, Marco heads roasting. " +
-                "Revenue was EUR 4.2M in 2025 with a plan of EUR 6M in 2026; subscriptions make up 30% of revenue.",
+                "Present 'Lumora Analytics', a B2B AI startup optimizing energy in commercial buildings. " +
+                "6 slides: cover, the product, the market, the team, the roadmap, growth targets. " +
+                "Place the 3 provided context images (skyline.png, power-pylon.png, brain.png) inside the slides " +
+                "by referencing their file names in <img src='...'> tags: the skyline on the cover or market slide, " +
+                "the power pylon on the product slide, the brain circuit on the team slide.",
+                style: "Cyberpunk Neon",
+                imageFiles: new[] { "images/skyline.png", "images/power-pylon.png", "images/brain.png" },
+                contextText: "Lumora Analytics was founded in 2022 in Berlin by Elena Keller (CEO) and Jonas Weber (CTO), " +
+                "starting with 3 engineers; today it employs 34 people across product, AI/ML, sales and customer success. " +
+                "Product: the Lumora platform, an AI service that continuously optimizes HVAC, lighting and ventilation in " +
+                "commercial buildings through IoT sensors and smart-building integrations (BACnet, MQTT, REST). Core features: " +
+                "a real-time optimization engine that cuts energy costs by up to 30%, predictive maintenance alerts, an " +
+                "executive dashboard with per-building benchmarking, and a public REST API for facility-management systems. " +
+                "Differentiators: hardware-agnostic (no vendor lock-in), 2-week onboarding, and average payback of 14 months. " +
+                "Market: building energy management is about USD 14B in 2026, growing roughly 18% per year toward USD 32B by " +
+                "2030. Segments: office buildings (60% of revenue), retail and logistics centers. Competitors: large vendors " +
+                "such as Siemens and Schneider Electric, plus smaller startups; Lumora wins on time-to-value and neutrality. " +
+                "Pricing: SaaS subscription per square meter, starting at EUR 0.40/m2/month, 40% of revenue from annual contracts. " +
+                "Team: Elena Keller, ex-BigFour energy consultant, leads strategy and GTM; Jonas Weber, ex-Google ML engineer, " +
+                "leads the platform. Key hires in 2025: Head of Sales (from Siemens Smart Infrastructure) and Head of ML " +
+                "(ex-DeepMind), plus an advisory board with two former building-automation CTOs. Roadmap: Q1 2024 commercial " +
+                "launch with 12 pilot buildings; Q2 2024 first annual contracts; 2025 Series A of EUR 8M; Q1 2026 expansion to " +
+                "Austria and Switzerland; Q3 2026 retail vertical and 120 buildings under contract; Q1 2027 France and the " +
+                "Netherlands. Targets: EUR 1.2M revenue in 2025, EUR 3M in 2026, EUR 7.5M in 2027; gross margin 75%, " +
+                "85% customer retention, net revenue retention 120%, break-even planned in 2028.",
                 saveFullNameFile: "/presentation.html");
             Console.WriteLine($"  CreatePresentation → {r}");
 
@@ -66,6 +90,7 @@ static class Program
             if (!r.StartsWith("Presentation created at") || !File.Exists(hostFile))
             { Fail("single-create", $"create failed: {r}"); return 1; }
 
+            RepairImages(hostFile);
             OpenInBrowser(hostFile);
             Pass("single-create");
             Console.WriteLine($"File: {hostFile}");
@@ -266,6 +291,62 @@ static class Program
             PauseBetweenRequests = TimeSpan.Zero,
             ContextWindow = 262144,
         }, persist: false);
+    }
+
+    /// <summary>Guarantees the context images are visible in the deck: when the LLM only mocked an
+    /// image (placeholder SVG with matching alt text instead of the real file name), the placeholder
+    /// src is replaced with the actual PNG data URI and its opacity reset, so the image always shows.</summary>
+    static void RepairImages(string htmlPath)
+    {
+        var html = File.ReadAllText(htmlPath);
+        var changed = false;
+        foreach (var (file, keyword) in new[] { ("skyline.png", "skyline"), ("power-pylon.png", "pylon"), ("brain.png", "brain") })
+        {
+            var src = Path.Combine(_workspace, "images", file);
+            if (!File.Exists(src)) continue;
+            var dataUri = "data:image/png;base64," + Convert.ToBase64String(File.ReadAllBytes(src));
+            if (html.Contains(dataUri)) continue; // the LLM already referenced the real file
+            var pattern = $@"<img\b(?=[^>]*\balts?\s*=\s*[""'][^""']*{Regex.Escape(keyword)}[^""']*[""'])[^>]*>";
+            var count = 0;
+            html = Regex.Replace(html, pattern, m =>
+            {
+                count++;
+                var tag = Regex.Replace(m.Value, @"src\s*=\s*[""'][^""']*[""']", $"src=\"{dataUri}\"", RegexOptions.IgnoreCase);
+                return Regex.Replace(tag, @"opacity\s*:\s*[\d.]+", "opacity:1", RegexOptions.IgnoreCase);
+            }, RegexOptions.IgnoreCase);
+            if (count > 0) changed = true;
+        }
+        if (changed)
+        {
+            File.WriteAllText(htmlPath, html);
+            Console.WriteLine("  images: repaired placeholder <img> tags with the real PNG data URIs");
+        }
+
+        // The LLM typically styles .img-bg / .img-bg-light at ~8% opacity, making the context
+        // images invisible; force a clearly visible opacity when any of them is embedded.
+        if (html.Contains("data:image/png;base64"))
+        {
+            html = File.ReadAllText(htmlPath);
+            var overrideCss = "<style>.img-bg,.img-bg-light{opacity:.9!important}</style></head>";
+            var count = 0;
+            html = Regex.Replace(html, "</head>", _ => { count++; return overrideCss; }, RegexOptions.IgnoreCase);
+            if (count > 0) { File.WriteAllText(htmlPath, html); Console.WriteLine("  images: forced visible opacity (.img-bg → 0.9)"); }
+        }
+    }
+
+    /// <summary>Stages the public-domain context images (white silhouettes on transparent, plus a
+    /// colored circuit-brain) in the workspace so the deck can reference them (they are embedded as
+    /// data URIs by the plugin). Sources: Openclipart 348279 (Tokyo skyline), 318395 (power pylon)
+    /// and 307528 (cybernetic brain circuit), all CC0/public domain; the black silhouettes are
+    /// inverted to white for visibility on the dark theme.</summary>
+    static void StageImages()
+    {
+        var srcDir = Path.Combine(AppContext.BaseDirectory, "assets", "images");
+        if (!Directory.Exists(srcDir)) return;
+        var dstDir = Path.Combine(_workspace, "images");
+        Directory.CreateDirectory(dstDir);
+        foreach (var file in Directory.GetFiles(srcDir, "*.png"))
+            File.Copy(file, Path.Combine(dstDir, Path.GetFileName(file)), overwrite: true);
     }
 
     /// <summary>Stages a small icon set in the harness output so SVG placeholder embedding

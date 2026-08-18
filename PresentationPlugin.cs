@@ -20,14 +20,14 @@ namespace AIOrchestrator.API
 
         /// <summary>Generate a PowerPoint-style presentation</summary>
         /// <param name="description">What the presentation must cover. The description must include: the subject, a descriptive title and the purpose of the presentation (e.g. "Present the Q3 2026 sales results, titled 'Record Quarter', to the management team — 5 slides"). Keep it a guideline: put the supporting material in contextText or contextFile, otherwise the tool rejects the request for lack of material.</param>
-        /// <param name="style">Optional graphic style that shapes the deck (e.g. Modern, Vintage, Minimalist White, Brutalist, Retro Pop, Vaporwave, Biophilic Design, Cyberpunk Neon, Glassmorphism, Bento Grid, Retro.</param>
+        /// <param name="style">Optional graphic style that shapes the deck (e.g. Modern, Vintage, Minimalist White, Brutalist, Retro Pop, Vaporwave, Biophilic Design, Cyberpunk Neon, Glassmorphism, Bento Grid, Retro).</param>
+        /// <param name="outputTwoLetterLanguage">Optional two-letter language code for the presentation (e.g. "en", "fr"); if omitted, the context data language is used.</param>
         /// <param name="contextText">Optional context text the deck content must be based on. (Mandatory if contextFile is missing)</param>
         /// <param name="contextFile">Optional workspace file read as content context (Unix-style path, e.g. "/docs/report.md"). (Mandatory if contextText is missing)</param>
         /// <param name="imageFiles">Optional workspace image files embedded in the deck (Unix-style paths, e.g. "/images/chart.png"). The LLM places each image; each image is used at most once.</param>
         /// <param name="saveFullNameFile">Optional output file path and name (Unix-style, must end with ".html", e.g. "/out/sales.html"). Default: "/presentation/presentation_yyyyMMdd_HHmmss.html" in the workspace.</param>
         /// <returns>The generated .html path in workspace form, or an "Error: ..." message (missing input, unsupported image type, insufficient context, unclear description, LLM failure).</returns>
-        public string CreatePresentation(string description, string? style = null, string? contextText = null,
-            string? contextFile = null, string[]? imageFiles = null, string? saveFullNameFile = null)
+        public string CreatePresentation(string description, string? style = null, string? contextText = null, string? contextFile = null, string[]? imageFiles = null, string? saveFullNameFile = null, string? outputTwoLetterLanguage = null)
         {
             if (string.IsNullOrWhiteSpace(description))
                 return "Error: description is required.";
@@ -56,19 +56,8 @@ namespace AIOrchestrator.API
                 context.AppendLine(ReadTextCapped(ctxHost, 60_000));
             }
 
-            var images = new List<string>();
-            if (imageFiles != null)
-            {
-                foreach (var img in imageFiles.Where(f => !string.IsNullOrWhiteSpace(f)))
-                {
-                    string imgHost;
-                    try { imgHost = SandboxPath.Resolve(img); }
-                    catch (UnauthorizedAccessException ex) { return $"Error: {ex.Message}"; }
-                    if (!File.Exists(imgHost)) return $"Error: image file '{img}' not found in the workspace.";
-                    if (MimeFor(imgHost) == null) return $"Error: unsupported image type for '{img}'. Use png, jpg, gif, bmp, svg or webp.";
-                    images.Add(imgHost);
-                }
-            }
+            var (images, imagesError) = ResolveImages(imageFiles);
+            if (imagesError != null) return imagesError;
 
             style ??= Styles[Random.Shared.Next(Styles.Length)];
             Log.LogStep($"PresentationPlugin.CreatePresentation: description='{Truncate(description, 120)}' style={style} images={images!.Count} contextLen={context.Length}");
@@ -78,8 +67,9 @@ namespace AIOrchestrator.API
             if (!opinion.Sufficient || !opinion.DescriptionClear)
                 return BuildInsufficientError(opinion);
 
-            var html = GenerateHtml(BuildCreatePrompt(description, style, contextFiles, context.ToString(), images));
+            var html = GenerateHtml(BuildCreatePrompt(description, style, contextFiles, context.ToString(), images, outputTwoLetterLanguage));
             if (html == null) return "Error: the LLM returned no usable HTML after 3 attempts. Retry later.";
+            html = EnsureImagesUsed(html, images);
             var improved = GenerateHtml(ImproveHtmlCode(html, style));
 # if DEBUG
             if (improved == null)
@@ -90,6 +80,7 @@ namespace AIOrchestrator.API
             var checkedHtml = GenerateHtml(BuildCheckFixPrompt(html));
             if (checkedHtml != null) html = checkedHtml;
             else Log.LogStep("PresentationPlugin.CreatePresentation: check&fix pass failed, keeping previous HTML");
+            html = EnsureImagesUsed(html, images); // re-check: later passes may have dropped the images
             html = EmbedImages(html, images);
             html = EmbedSvgIcons(html);
             html = InjectFixContentSizeScript(html);
@@ -109,8 +100,9 @@ namespace AIOrchestrator.API
         /// <param name="filePath">Path of the presentation to update (Unix-style, e.g. "/presentation/sales.html").</param>
         /// <param name="changes">The changes to apply (e.g. "shorten slide 3, change the colors, add a summary slide at the end").</param>
         /// <param name="contextText">Optional extra context the update must respect.</param>
+        /// <param name="imageFiles">Optional workspace image files the update must place in the deck (Unix-style paths, e.g. "/images/chart.png"), same semantics as in CreatePresentation: the LLM places each image, each image is used at most once, and they are embedded as data URIs.</param>
         /// <returns>The updated .html path in workspace form (with the backup name), or an "Error: ..." message (missing input, unclear changes, LLM failure).</returns>
-        public string UpdatePresentation(string filePath, string changes, string? contextText = null)
+        public string UpdatePresentation(string filePath, string changes, string? contextText = null, string[]? imageFiles = null)
         {
             if (string.IsNullOrWhiteSpace(changes)) return "Error: changes is required.";
             string hostPath;
@@ -124,17 +116,18 @@ namespace AIOrchestrator.API
             try { currentHtml = File.ReadAllText(hostPath); }
             catch (Exception ex) { return $"Error: cannot read the presentation. {ex.Message}"; }
 
-            Log.LogStep($"PresentationPlugin.UpdatePresentation: '{hostPath}' changes='{Truncate(changes, 120)}' contextText='{Truncate(contextText ?? "", 120)}'");
+            var (images, imagesError) = ResolveImages(imageFiles);
+            if (imagesError != null) return imagesError;
+
+            Log.LogStep($"PresentationPlugin.UpdatePresentation: '{hostPath}' changes='{Truncate(changes, 120)}' contextText='{Truncate(contextText ?? "", 120)}' images={images!.Count}");
             var verdict = AskChangesClear(changes, contextText);
             if (verdict == null) return "Error: the LLM returned no usable evaluation of the changes. Retry later.";
             if (!verdict.Clear)
                 return $"Error: the requested changes are not clear enough to apply. {Reasons(verdict.Explanation, "the changes do not say what to modify")}";
 
-            var html = GenerateHtml(BuildUpdatePrompt(currentHtml, changes, contextText));
+            var html = UpdateHtmlCore(currentHtml, changes, contextText, images);
             if (html == null) return "Error: the LLM returned no usable HTML after 3 attempts. Retry later.";
-            var checkedHtml = GenerateHtml(BuildCheckFixPrompt(html));
-            if (checkedHtml != null) html = checkedHtml;
-            else Log.LogStep("PresentationPlugin.UpdatePresentation: check&fix pass failed, keeping updated HTML");
+            html = EmbedImages(html, images);
             html = EmbedSvgIcons(html);
 
             string? backup = null;
@@ -153,6 +146,55 @@ namespace AIOrchestrator.API
 
         // ---------- LLM ----------
 
+        /// <summary>Resolves the optional image files to host paths, validating existence and type.
+        /// Returns (images, null) on success or (null, error message) on the first bad entry.</summary>
+        private static (List<string>? Images, string? Error) ResolveImages(string[]? imageFiles)
+        {
+            var images = new List<string>();
+            if (imageFiles == null) return (images, null);
+            foreach (var img in imageFiles.Where(f => !string.IsNullOrWhiteSpace(f)))
+            {
+                string imgHost;
+                try { imgHost = SandboxPath.Resolve(img); }
+                catch (UnauthorizedAccessException ex) { return (null, $"Error: {ex.Message}"); }
+                if (!File.Exists(imgHost)) return (null, $"Error: image file '{img}' not found in the workspace.");
+                if (MimeFor(imgHost) == null) return (null, $"Error: unsupported image type for '{img}'. Use png, jpg, gif, bmp, svg or webp.");
+                images.Add(imgHost);
+            }
+            return (images, null);
+        }
+
+        /// <summary>Checks the first-pass deck for each context image by searching the file name as a
+        /// string; any image the LLM did not reference is forced into the deck through the update flow
+        /// (the changes text instructs to insert them where most appropriate).</summary>
+        private static string EnsureImagesUsed(string html, List<string> images)
+        {
+            if (images.Count == 0) return html;
+            var missing = images.Where(i => !html.Contains(Path.GetFileName(i), StringComparison.OrdinalIgnoreCase)).ToList();
+            if (missing.Count == 0)
+            {
+                Log.LogStep("PresentationPlugin.CreatePresentation: all context images referenced in the first pass");
+                return html;
+            }
+            Log.LogStep($"PresentationPlugin.CreatePresentation: forcing {missing.Count} missing image(s) via update flow: " +
+                        string.Join(", ", missing.Select(Path.GetFileName)));
+            const string changes = "These images are part of the presentation and should be inserted into the html page where most appropriate.";
+            return UpdateHtmlCore(html, changes, null, images) ?? html;
+        }
+
+        /// <summary>Shared LLM core of the update flow: generates the updated deck from the current
+        /// HTML plus the requested changes, then runs the check&amp;fix pass. Returns null when the
+        /// LLM cannot produce valid HTML. Embedding (images/icons) is left to the callers.</summary>
+        private static string? UpdateHtmlCore(string currentHtml, string changes, string? contextText, List<string> images)
+        {
+            var html = GenerateHtml(BuildUpdatePrompt(currentHtml, changes, contextText, images));
+            if (html == null) return null;
+            var checkedHtml = GenerateHtml(BuildCheckFixPrompt(html));
+            if (checkedHtml != null) html = checkedHtml;
+            else Log.LogStep("PresentationPlugin.UpdatePresentation: check&fix pass failed, keeping updated HTML");
+            return html;
+        }
+
         /// <summary>Asks the LLM (no history) whether the given context and description are enough to build the deck; returns the JSON verdict or null when the LLM fails.</summary>
         private static SufficiencyOpinion? AskOpinion(string description, string context)
         {
@@ -161,14 +203,12 @@ namespace AIOrchestrator.API
                 Today's date: {{DateTime.Now:yyyy-MM-dd}}
 
                 You check whether the material provided is sufficient to fulfill the presentation request.
-                The description serves as a guideline for the presentation.
-                Do NOT proceed when the material cannot support a well-made deck: list exactly what is missing.
-                Rules:
-                - A well-known topic (e.g. "history of coffee", "solar panel industry") is ALWAYS sufficient: general knowledge builds the deck.
-                - Do NOT reject for missing details that general knowledge or design can supply: timelines, statistics, figures, market segments, slide structure, visual assets. Those are NOT missing material.
-                - Reject ONLY when the deck cannot be built at all: empty/meaningless description, or a SPECIFIC subject (a company, an event, internal data) whose essential facts are absent from the provided material — then list exactly what is missing.
+                Check if the context material is sufficient to create a presentation as specified in the description.
 
-                Description: {{description}}
+                Description of the task to be performed (description):
+                ```text
+                {{(string.IsNullOrWhiteSpace(description) ? "(none provided)" : description)}}
+                ```
 
                 Material (context):
                 ```text
@@ -177,7 +217,7 @@ namespace AIOrchestrator.API
 
                 Respond with ONLY JSON (no fences, no commentary):
                 {"sufficient": true|false, "descriptionClear": true|false, "explanation": ["what is missing or unclear", ...]}
-                - "sufficient" = false when the material cannot cover what the request needs.
+                - "sufficient" = false when the background material is not sufficient for a powerpoint presentation that fulfills the description's requirements.
                 - "descriptionClear" = false when the description is ambiguous (unclear subject, title or purpose).
                 - "explanation" lists the concrete missing/unclear items when a flag is false; empty otherwise.
                 """;
@@ -265,12 +305,32 @@ namespace AIOrchestrator.API
             return null;
         }
 
-        private static string BuildCreatePrompt(string description, string style, List<string> contextFiles, string context, List<string> images)
+        private static string BuildCreatePrompt(string description, string style, List<string> contextFiles, string context, List<string> images, string? outputTwoLetterLanguage = null)
         {
+
+            // auto detect language if not specified: from the context, else from the first context file
+            if (string.IsNullOrWhiteSpace(outputTwoLetterLanguage))
+            {
+                outputTwoLetterLanguage = Utility.DetectLanguage(context);
+                if (outputTwoLetterLanguage == null && contextFiles.Count > 0)
+                {
+                    try { outputTwoLetterLanguage = Utility.DetectLanguage(ReadTextCapped(SandboxPath.Resolve(contextFiles[0]), 60_000)); }
+                    catch (UnauthorizedAccessException) { }
+                }
+                outputTwoLetterLanguage ??= "en";
+            }
+            string languageName;
+            try { languageName = new CultureInfo(outputTwoLetterLanguage).EnglishName; }
+            catch (CultureNotFoundException) { languageName = "English"; }
+
+
             var sb = new StringBuilder();
             sb.AppendLine("Today's date: " + DateTime.Now.ToString("yyyy-MM-dd"));
-            sb.AppendLine("Create a website of presentation using these context documents.");
-            sb.AppendLine("Presentation description: " + description);
+            sb.AppendLine($"Create a website of presentation in {languageName} using these context documents.");
+            sb.AppendLine("Presentation description:");
+            sb.AppendLine("```text");
+            sb.AppendLine(description);
+            sb.AppendLine("```");
             sb.AppendLine("Create as many slides as needed for your purpose (add or remove .slide elements in the template as needed).");
             if (contextFiles.Count > 0)
             {
@@ -287,14 +347,16 @@ namespace AIOrchestrator.API
             sb.AppendLine();
             sb.AppendLine("- To make communication more effective you can insert into the slides: Tables, Kanban Boards, Timelines, Roadmaps, Organizational Charts, Flowcharts, Venn Diagrams, SWOT Analysis grids, PESTLE Analysis frameworks, Decision Trees, and other useful elements.");
             sb.AppendLine("- Don't use small fonts.");
-            sb.AppendLine("- Contrast font colors in both themes.");
             if (images.Count > 0)
             {
+                sb.AppendLine();
                 sb.AppendLine("Available images (reference by file name only, e.g. <img src=\"chart.png\">):");
                 foreach (var img in images) sb.AppendLine("- " + DescribeImage(img));
+                sb.AppendLine("- Use each image once");
+                sb.AppendLine();
             }
             sb.AppendLine("- Use square SVG icons with a self-explanatory file name that can encode size and color: <icon-name>.<size>.<rrggbb>.svg (these files will be auto-generated based on the name you give them). Usage example: disc.32.aa0000.svg (a disc icon, 32x32 px, hex color #aa0000) → <img src=\"disc.32.aa0000.svg\" alt=\"disc\">");
-            sb.AppendLine("- Use this template (keep its CSS classes, light and dark theme, navigation buttons and script unchanged; fill the .slide elements with the deck slides):");
+            sb.AppendLine($"- Use this template with a \"{style.ToLower()}\" style (keep its CSS classes, light and dark theme, navigation buttons and script unchanged; fill the .slide elements with the deck slides):");
             sb.AppendLine("```html");
             sb.AppendLine(TemplateHtml);
             sb.AppendLine("```");
@@ -337,7 +399,7 @@ namespace AIOrchestrator.API
             return sb.ToString();
         }
 
-        private static string BuildUpdatePrompt(string currentHtml, string changes, string? contextText)
+        private static string BuildUpdatePrompt(string currentHtml, string changes, string? contextText, List<string> images)
         {
             var sb = new StringBuilder();
             sb.AppendLine("Today's date: " + DateTime.Now.ToString("yyyy-MM-dd"));
@@ -345,7 +407,7 @@ namespace AIOrchestrator.API
             sb.AppendLine("Apply the requested changes LITERALLY to the HTML below:");
             sb.AppendLine("- The exact strings in the changes request (titles, labels, text) MUST appear verbatim in the output — do not reword or replace them.");
             sb.AppendLine("- Change ONLY what the changes request; keep the rest of the content, wording and structure identical.");
-            sb.AppendLine("- Keep the template's CSS classes, navigation buttons and script unchanged; edit the .slide elements (and styles only if needed).");
+            sb.AppendLine("- Keep the template's CSS classes, the language, navigation buttons and script unchanged; edit the .slide elements (and styles only if needed).");
             sb.AppendLine();
             sb.AppendLine("Current presentation HTML:");
             sb.AppendLine("```html");
@@ -353,6 +415,14 @@ namespace AIOrchestrator.API
             sb.AppendLine("```");
             sb.AppendLine();
             sb.AppendLine("Requested changes: " + changes);
+            if (images.Count > 0)
+            {
+                sb.AppendLine();
+                sb.AppendLine("Available images (reference by file name only, e.g. <img src=\"chart.png\">):");
+                foreach (var img in images) sb.AppendLine("- " + DescribeImage(img));
+                sb.AppendLine("- Use each image once");
+                sb.AppendLine();
+            }
             if (!string.IsNullOrWhiteSpace(contextText)) sb.AppendLine("Additional context: " + contextText);
             sb.AppendLine("You may add SVG icons with a minimalist self-descriptive file name, such as <icon-name>.svg (these files will be auto-generated based on the minimalist name you give them).");
             sb.AppendLine("Write the content in the language of the presentation.");
