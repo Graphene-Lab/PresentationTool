@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using AIOrchestrator;
 using AIOrchestrator.API;
+using UISupportGeneric;
 
 namespace PresentationToolHarness;
 
@@ -220,6 +221,14 @@ static class Program
             if (outHtml.Contains("</script></script>")) return "double-wrapped script (malformed)";
             if (!outHtml.Contains("const zoom") || outHtml.IndexOf("const zoom") > outHtml.IndexOf("</body>"))
                 return "fix-content-size script must precede </body>";
+            return null;
+        });
+
+        failures += Test("definitions: dynamic style list resolves", () =>
+        {
+            var defs = Analyzer.GeToolDefinitions(typeof(PresentationTool));
+            if (defs.Contains("[[available_styles]]")) return "placeholder not resolved";
+            if (!defs.Contains("Cyberpunk Neon")) return "resolved style list missing an entry";
             return null;
         });
 

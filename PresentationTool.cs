@@ -5,6 +5,7 @@ using System.Globalization;
 using HtmlAgilityPack;
 using SixLabors.ImageSharp;
 using System.Diagnostics;
+using UISupportGeneric;
 
 [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("PresentationTool.Harness")]
 
@@ -18,9 +19,20 @@ namespace AIOrchestrator.API
         private const int MaxHtmlAttempts = 3;
         private const string OnlyOutputAnswer = "- Output only full HTML code. No opening or closing comments, no fences. [Output only]";
 
+        /// <summary>Registers the resolver for the [[available_styles]] dynamic placeholder: the tool
+        /// description (param "style") always shows the current style list, in sync with the code.</summary>
+        static PresentationTool()
+        {
+            Analyzer.DynamicDescriptionRequested += (_, e) =>
+            {
+                if (e.ToolType == typeof(PresentationTool) && e.Placeholder == "available_styles")
+                    e.Value = string.Join(", ", Styles);
+            };
+        }
+
         /// <summary>Generate a PowerPoint-style presentation</summary>
         /// <param name="description">What the presentation must cover. The description must include: the subject, a descriptive title and the purpose of the presentation (e.g. "Present the Q3 2026 sales results, titled 'Record Quarter', to the management team — 5 slides"). Keep it a guideline: put the supporting material in contextText or contextFile, otherwise the tool rejects the request for lack of material.</param>
-        /// <param name="style">Optional graphic style that shapes the deck (e.g. Modern, Vintage, Minimalist White, Brutalist, Retro Pop, Vaporwave, Biophilic Design, Cyberpunk Neon, Glassmorphism, Bento Grid, Retro).</param>
+        /// <param name="style">Optional graphic style that shapes the deck. Available styles: [[available_styles]].</param>
         /// <param name="outputTwoLetterLanguage">Optional two-letter language code for the presentation (e.g. "en", "fr"); if omitted, the context data language is used.</param>
         /// <param name="contextText">Optional context text the deck content must be based on. (Mandatory if contextFile is missing)</param>
         /// <param name="contextFile">Optional workspace file read as content context (Unix-style path, e.g. "/docs/report.md"). (Mandatory if contextText is missing)</param>
