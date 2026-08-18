@@ -71,7 +71,7 @@ namespace AIOrchestrator.API
             }
 
             style ??= Styles[Random.Shared.Next(Styles.Length)];
-            Log.LogStep($"PresentationPlugin.CreatePresentation: description='{Truncate(description, 120)}' style={style} images={images.Count} contextLen={context.Length}");
+            Log.LogStep($"PresentationPlugin.CreatePresentation: description='{Truncate(description, 120)}' style={style} images={images!.Count} contextLen={context.Length}");
 
             var opinion = AskOpinion(description, context.ToString());
             if (opinion == null) return "Error: the LLM returned no usable evaluation of the request. Retry later.";
@@ -95,7 +95,11 @@ namespace AIOrchestrator.API
             html = InjectFixContentSizeScript(html);
             html = InjectAnimatedBackground(html, style);
 
-            try { File.WriteAllText(hostPath, html); }
+            try
+            {
+                if (File.Exists(hostPath)) CreateBackup(hostPath);
+                File.WriteAllText(hostPath, html);
+            }
             catch (Exception ex) { return $"Error: cannot save the presentation. {ex.Message}"; }
             Log.LogStep($"PresentationPlugin.CreatePresentation: wrote '{hostPath}' ({html.Length} chars)");
             return $"Presentation created at {SandboxPath.ToAgent(hostPath)}";
