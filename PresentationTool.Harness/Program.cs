@@ -4,10 +4,10 @@ using System.Text.RegularExpressions;
 using AIOrchestrator;
 using AIOrchestrator.API;
 
-namespace PresentationPluginHarness;
+namespace PresentationToolHarness;
 
 /// <summary>
-/// PresentationPlugin single-create visual test: generates ONE presentation and opens it
+/// PresentationTool single-create visual test: generates ONE presentation and opens it
 /// in the system default browser for manual visual inspection (styling second pass, theme,
 /// layout). Strategy mirrors DocumentTool.Tests / OfficeTool.Tests (AGENT_TOOLS_GUIDE
 /// "Testing Agent Tools"): behavioral test, only the artifact is produced and verified.
@@ -21,7 +21,7 @@ static class Program
     private static int _failures;
     private static string _workspace = "";
     private static string _providerName = "DeepSeekBridge";
-    private static readonly string ResultsFile = Path.Combine(Path.GetTempPath(), "presentationplugin_test_results.txt");
+    private static readonly string ResultsFile = Path.Combine(Path.GetTempPath(), "presentationtool_test_results.txt");
 
     static int Main(string[] args)
     {
@@ -32,7 +32,7 @@ static class Program
         EnsureProvider();
 
         Log.IsEnabled = true;
-        _workspace = Path.Combine(Path.GetTempPath(), "PresentationPlugin.Tests-workspace");
+        _workspace = Path.Combine(Path.GetTempPath(), "PresentationTool.Tests-workspace");
         try
         {
             if (Directory.Exists(_workspace)) Directory.Delete(_workspace, recursive: true);
@@ -50,13 +50,13 @@ static class Program
         File.WriteAllText(ResultsFile, $"RUN {DateTime.Now:HH:mm:ss} provider={_providerName}\n");
         WriteResult("STARTED");
 
-        Console.WriteLine("══════════ PresentationPlugin single-create test ══════════");
+        Console.WriteLine("══════════ PresentationTool single-create test ══════════");
         Console.WriteLine($"provider: {_providerName}");
-        Log.LogStep($"=== PresentationPlugin single-create test (provider {_providerName}) ===");
+        Log.LogStep($"=== PresentationTool single-create test (provider {_providerName}) ===");
 
         try
         {
-            var tool = new PresentationPlugin();
+            var tool = new PresentationTool();
             var r = tool.CreatePresentation(
                 "Present 'Lumora Analytics', a B2B AI startup optimizing energy in commercial buildings. " +
                 "6 slides: cover, the product, the market, the team, the roadmap, growth targets. " +
@@ -125,7 +125,7 @@ static class Program
     /// injection. Exit code 0 = all green. Invoked with `--selftest`.</summary>
     static int RunSelfTest()
     {
-        Console.WriteLine("══════════ PresentationPlugin deterministic self-test ══════════");
+        Console.WriteLine("══════════ PresentationTool deterministic self-test ══════════");
         var failures = 0;
 
         failures += Test("icons: controlled dir (size + color + paths)", () =>
@@ -150,7 +150,7 @@ static class Program
                     return "unknown icon must stay unresolved";
                 var first = Regex.Match(outHtml, "src=\"data:image/svg\\+xml;base64,([^\"]+)\"");
                 var svg = Encoding.UTF8.GetString(Convert.FromBase64String(first.Groups[1].Value));
-                if (!svg.Contains("width=\"32\"")) return $"size 32 not applied: {svg}";
+                if (!svg.Contains("width=\"32px\"")) return $"size 32 not applied: {svg}";
                 if (!svg.Contains("stroke=\"#aa0000\"")) return $"color aa0000 not applied: {svg}";
                 return null;
             }
@@ -159,11 +159,11 @@ static class Program
 
         failures += Test("icons: plugin wrapper on real assets", () =>
         {
-            var outHtml = PresentationPlugin.EmbedSvgIcons("<img src=\"disc.32.aa0000.svg\">");
+            var outHtml = PresentationTool.EmbedSvgIcons("<img src=\"disc.32.aa0000.svg\">");
             var m = Regex.Match(outHtml, "src=\"data:image/svg\\+xml;base64,([^\"]+)\"");
             if (!m.Success) return $"disc icon not embedded (icons dir missing?): {outHtml}";
             var svg = Encoding.UTF8.GetString(Convert.FromBase64String(m.Groups[1].Value));
-            if (!svg.Contains("width=\"32\"")) return "size not applied on real icon";
+            if (!svg.Contains("width=\"32px\"")) return "size not applied on real icon";
             if (!svg.Contains("#aa0000")) return "color not applied on real icon";
             return null;
         });
@@ -171,7 +171,7 @@ static class Program
         failures += Test("background: style match + position", () =>
         {
             var html = "<html><head><title>t</title></head><body><p>x</p></body></html>";
-            var outHtml = PresentationPlugin.InjectAnimatedBackground(html, "modern");
+            var outHtml = PresentationTool.InjectAnimatedBackground(html, "modern");
             if (Regex.Matches(outHtml, "</head>").Count != 1) return "</head> must appear exactly once";
             if (!outHtml.Contains("bg-modern")) return "modern block not injected";
             if (outHtml.IndexOf("bg-modern") > outHtml.IndexOf("</head>")) return "block must precede </head>";
@@ -180,20 +180,20 @@ static class Program
 
         failures += Test("background: case-insensitive style", () =>
         {
-            var outHtml = PresentationPlugin.InjectAnimatedBackground("<html><head></head></html>", "MODERN");
+            var outHtml = PresentationTool.InjectAnimatedBackground("<html><head></head></html>", "MODERN");
             return outHtml.Contains("bg-modern") ? null : "case-insensitive lookup failed";
         });
 
         failures += Test("background: multi-word style", () =>
         {
-            var outHtml = PresentationPlugin.InjectAnimatedBackground("<html><head></head></html>", "Minimalist White");
+            var outHtml = PresentationTool.InjectAnimatedBackground("<html><head></head></html>", "Minimalist White");
             return outHtml.Contains("bg-minimal") ? null : "multi-word style lookup failed";
         });
 
         failures += Test("background: random fallback + no duplication", () =>
         {
             var html = "<html><head><title>t</title></head><body></body></html>";
-            var outHtml = PresentationPlugin.InjectAnimatedBackground(html, "NoSuchStyle");
+            var outHtml = PresentationTool.InjectAnimatedBackground(html, "NoSuchStyle");
             var blocks = Directory.GetFiles(Path.Combine(AppContext.BaseDirectory, "assets"), "*.bg")
                 .Select(File.ReadAllText).ToArray();
             if (blocks.Length == 0) return "no .bg assets staged in harness output";
@@ -204,13 +204,13 @@ static class Program
 
         failures += Test("pipeline: full post-processing on real template", () =>
         {
-            var deck = PresentationPlugin.TemplateHtml.Replace(
+            var deck = PresentationTool.TemplateHtml.Replace(
                 "<div class=\"slide active\"></div>",
                 "<div class=\"slide active\"><h2 style=\"color: var(--color-text);\">Test</h2>" +
                 "<img src=\"disc.32.aa0000.svg\" alt=\"disc\"><img src=\"users.24.svg\" alt=\"users\"></div>");
-            var outHtml = PresentationPlugin.EmbedSvgIcons(deck);
-            outHtml = PresentationPlugin.InjectFixContentSizeScript(outHtml);
-            outHtml = PresentationPlugin.InjectAnimatedBackground(outHtml, "Cyberpunk Neon");
+            var outHtml = PresentationTool.EmbedSvgIcons(deck);
+            outHtml = PresentationTool.InjectFixContentSizeScript(outHtml);
+            outHtml = PresentationTool.InjectAnimatedBackground(outHtml, "Cyberpunk Neon");
             if (Regex.Matches(outHtml, "</head>").Count != 1) return "</head> must appear exactly once";
             if (Regex.Matches(outHtml, "</body>").Count != 1) return "</body> must appear exactly once";
             if (!outHtml.Contains("bg-cyber")) return "cyberpunk background not injected";
@@ -221,6 +221,28 @@ static class Program
             if (!outHtml.Contains("const zoom") || outHtml.IndexOf("const zoom") > outHtml.IndexOf("</body>"))
                 return "fix-content-size script must precede </body>";
             return null;
+        });
+
+        failures += Test("restore: named backup + swap on .html", () =>
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "ptl-restore-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            var saved = Setup.DocumentsPath;
+            Setup.DocumentsPath = dir;
+            try
+            {
+                var f = Path.Combine(dir, "deck.html");
+                File.WriteAllText(f, "<html><body><h1>V1</h1></body></html>");
+                File.Copy(f, Path.Combine(dir, "deck.001.bak"));
+                File.WriteAllText(f, "<html><body><h1>V2</h1></body></html>");
+                var r = new PresentationTool().Restore("deck.001.bak");
+                if (!r.StartsWith("Presentation restored at") || !r.Contains("deck.001.bak")) return $"restore result: {r}";
+                if (!File.ReadAllText(f).Contains("V1")) return "restored content is not V1";
+                if (!File.Exists(Path.Combine(dir, "deck.002.bak"))) return "swap backup deck.002.bak not created";
+                if (!File.ReadAllText(Path.Combine(dir, "deck.002.bak")).Contains("V2")) return "swap backup does not hold V2";
+                return null;
+            }
+            finally { Setup.DocumentsPath = saved; try { Directory.Delete(dir, true); } catch { } }
         });
 
         Console.WriteLine(failures == 0 ? "  ALL SELF-TESTS PASSED" : $"  {failures} SELF-TEST FAILURES");
@@ -260,10 +282,10 @@ static class Program
             "<div class=\"slide\"><h2 style=\"color: var(--color-text);\">Second slide</h2></div>";
         foreach (var style in styles)
         {
-            var deck = PresentationPlugin.TemplateHtml.Replace("<div class=\"slide active\"></div>", sampleSlide);
-            deck = PresentationPlugin.EmbedSvgIcons(deck);
-            deck = PresentationPlugin.InjectFixContentSizeScript(deck);
-            deck = PresentationPlugin.InjectAnimatedBackground(deck, style);
+            var deck = PresentationTool.TemplateHtml.Replace("<div class=\"slide active\"></div>", sampleSlide);
+            deck = PresentationTool.EmbedSvgIcons(deck);
+            deck = PresentationTool.InjectFixContentSizeScript(deck);
+            deck = PresentationTool.InjectAnimatedBackground(deck, style);
             var file = Path.Combine(outDir, style.ToLowerInvariant().Replace(' ', '-') + ".html");
             File.WriteAllText(file, deck);
         }

@@ -1,47 +1,46 @@
-# PresentationPlugin
+# PresentationTool
 
-PowerPoint (PPTX) agent tool for AIOrchestrator. The LLM designs the deck — slides,
-titles, bullets, image placement — and the plugin builds the `.pptx` file with
-DocumentFormat.OpenXml.
+Self-contained HTML presentation (16:9 PowerPoint-style deck) agent tool for AIOrchestrator.
+The LLM designs the deck from a description and the plugin produces a **single self-contained
+HTML file**: styling, animated background, charts, SVG icons and images are embedded in it.
 
 ## Methods
 
 | Method | Purpose |
 |---|---|
-| `create_presentation` | Creates a new PPTX deck from a description (optional style, context text/file, image files, output path). |
-| `fix_presentation` | Applies requested changes to an existing PPTX deck (backup created before overwriting). |
+| `create_presentation` | Creates a new deck from a description (optional style, context text/file, image files, output path, language). |
+| `update_presentation` | Applies requested changes to an existing deck in place (numbered `.NNN.bak` backup before overwriting, backup name returned). |
 
 ## Usage
 
 Loads as a plugin (see [AGENT_TOOLS_GUIDE.md](https://github.com/Graphene-Lab/AgentHarness/blob/master/API/AGENT_TOOLS_GUIDE.md)):
 drop the `dll` + `xml` into the host's `Tools/` folder, or let the host build it via its
-`BuildToolPlugins` target. The tool is auto-updatable from NuGet (`Graphene.PresentationPlugin`).
+`BuildToolPlugins` target. The tool is auto-updatable from NuGet (`Graphene.PresentationTool`).
 
 ### create_presentation
 
 ```
-create_presentation(description, style?, contextText?, contextFile?, imageFiles?, savePath?)
+create_presentation(description, style?, outputTwoLetterLanguage?, contextText?, contextFile?, imageFiles?, saveFullNameFile?)
 ```
 
-- `description` (required): what the deck must cover — audience, tone, length.
-- `style` (optional): visual/graphic style hint that shapes the LLM's content wording.
-- `contextText` (optional): free text the content must be based on.
-- `contextFile` (optional): workspace file read as context (Unix-style path, e.g. `/docs/report.md`).
-- `imageFiles` (optional): workspace images embedded into slides (Unix-style paths); the LLM
-  decides which slide gets which image.
-- `savePath` (optional): output path/name (`.pptx`, Unix-style). Default:
-  `/presentation_yyyyMMdd_HHmmss.pptx` in the workspace root.
+- `description` (required): subject, descriptive title and purpose of the presentation.
+- `style` (optional): graphic style that shapes the deck (e.g. Modern, Cyberpunk Neon, ...).
+- `outputTwoLetterLanguage` (optional): two-letter language code (e.g. "en", "fr"); auto-detected from the context when omitted.
+- `contextText` / `contextFile` (optional): supporting material the deck content must be based on.
+- `imageFiles` (optional): workspace images embedded into the deck (Unix-style paths); the LLM
+  places each image, each is used at most once.
+- `saveFullNameFile` (optional): output path/name (`.html`, Unix-style). Default:
+  `/presentation/presentation_yyyyMMdd_HHmmss.html` in the workspace.
 
-### fix_presentation
+### update_presentation
 
 ```
-fix_presentation(filePath, changes, contextText?)
+update_presentation(filePath, changes, contextText?, imageFiles?)
 ```
 
-Extracts the current deck outline, has the LLM apply `changes`, and updates the deck in
-place (titles/bullets; existing slides keep their layout, images and formatting; extra
-slides are appended, missing ones removed). A numbered `.NNN.bak` backup is created
-before the deck is overwritten.
+Reads the current deck HTML, validates that the changes are clear, has the LLM apply them
+literally and overwrites the file in place. A numbered `.NNN.bak` backup is created before
+the deck is overwritten and its name is returned so the agent can restore it later.
 
 ## Packaging
 

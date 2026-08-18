@@ -6,12 +6,12 @@ using HtmlAgilityPack;
 using SixLabors.ImageSharp;
 using System.Diagnostics;
 
-[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("PresentationPlugin.Harness")]
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("PresentationTool.Harness")]
 
 namespace AIOrchestrator.API
 {
     /// <summary>Presentation operations for agent use: create and update a self-contained HTML deck from a description or change request. File paths are Unix-style, relative to the workspace root — never escape it.</summary>
-    public class PresentationPlugin : BaseAgentTool, IFileTool
+    public class PresentationTool : BaseAgentTool, IFileTool
     {
         private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
         private static readonly string[] Styles = ["Modern", "Vintage", "Minimalist White", "Brutalist", "Retro Pop", "Vaporwave", "Biophilic Design", "Cyberpunk Neon", "Glassmorphism", "Bento Grid", "Retro"];
@@ -60,7 +60,7 @@ namespace AIOrchestrator.API
             if (imagesError != null) return imagesError;
 
             style ??= Styles[Random.Shared.Next(Styles.Length)];
-            Log.LogStep($"PresentationPlugin.CreatePresentation: description='{Truncate(description, 120)}' style={style} images={images!.Count} contextLen={context.Length}");
+            Log.LogStep($"PresentationTool.CreatePresentation: description='{Truncate(description, 120)}' style={style} images={images!.Count} contextLen={context.Length}");
 
             var opinion = AskOpinion(description, context.ToString());
             if (opinion == null) return "Error: the LLM returned no usable evaluation of the request. Retry later.";
@@ -68,7 +68,7 @@ namespace AIOrchestrator.API
                 return BuildInsufficientError(opinion);
 
             var html = GenerateHtml(BuildCreatePrompt(description, style, contextFiles, context.ToString(), images, outputTwoLetterLanguage));
-            if (html == null) return "Error: the LLM returned no usable HTML after 3 attempts. Retry later.";
+            if (html == null) return $"Error: the LLM returned no usable HTML after {MaxHtmlAttempts} attempts. Retry later.";
             html = EnsureImagesUsed(html, images);
             var improved = GenerateHtml(ImproveHtmlCode(html, style));
 # if DEBUG
@@ -76,24 +76,31 @@ namespace AIOrchestrator.API
                 Debugger.Break();
 #endif
             if (improved != null) html = improved;
-            else Log.LogStep("PresentationPlugin.CreatePresentation: styling pass failed, keeping first-pass HTML");
+            else Log.LogStep("PresentationTool.CreatePresentation: styling pass failed, keeping first-pass HTML");
             var checkedHtml = GenerateHtml(BuildCheckFixPrompt(html));
             if (checkedHtml != null) html = checkedHtml;
-            else Log.LogStep("PresentationPlugin.CreatePresentation: check&fix pass failed, keeping previous HTML");
+            else Log.LogStep("PresentationTool.CreatePresentation: check&fix pass failed, keeping previous HTML");
             html = EnsureImagesUsed(html, images); // re-check: later passes may have dropped the images
             html = EmbedImages(html, images);
             html = EmbedSvgIcons(html);
             html = InjectFixContentSizeScript(html);
             html = InjectAnimatedBackground(html, style);
 
+            string? backup = null;
             try
             {
-                if (File.Exists(hostPath)) CreateBackup(hostPath);
+                backup = File.Exists(hostPath) ? CreateBackup(hostPath) : null;
                 File.WriteAllText(hostPath, html);
             }
-            catch (Exception ex) { return $"Error: cannot save the presentation. {ex.Message}"; }
-            Log.LogStep($"PresentationPlugin.CreatePresentation: wrote '{hostPath}' ({html.Length} chars)");
-            return $"Presentation created at {SandboxPath.ToAgent(hostPath)}";
+            catch (Exception ex)
+            {
+                Log.LogStep($"PresentationTool.CreatePresentation: failed '{hostPath}': {ex}");
+                return "Error: cannot save the presentation (write failed). Retry later.";
+            }
+            Log.LogStep($"PresentationTool.CreatePresentation: wrote '{hostPath}' ({html.Length} chars) backup='{backup ?? "(none)"}'");
+            return backup == null
+                ? $"Presentation created at {SandboxPath.ToAgent(hostPath)}"
+                : $"Presentation created at {SandboxPath.ToAgent(hostPath)}. Previous version backed up as '{SandboxPath.ToAgent(Path.Combine(Path.GetDirectoryName(hostPath)!, backup))}'.";
         }
 
         /// <summary>Updates an existing HTML presentation on request (e.g. change a slide, recolor the deck, add or remove content): the current deck HTML is read, the requested changes are validated for clarity, the LLM produces the updated deck, and the file is overwritten in place. A numbered backup (.NNN.bak) is created before the file is overwritten.</summary>
@@ -114,19 +121,23 @@ namespace AIOrchestrator.API
 
             string currentHtml;
             try { currentHtml = File.ReadAllText(hostPath); }
-            catch (Exception ex) { return $"Error: cannot read the presentation. {ex.Message}"; }
+            catch (Exception ex)
+            {
+                Log.LogStep($"PresentationTool.UpdatePresentation: cannot read '{hostPath}': {ex}");
+                return "Error: cannot read the presentation (the file may be corrupted).";
+            }
 
             var (images, imagesError) = ResolveImages(imageFiles);
             if (imagesError != null) return imagesError;
 
-            Log.LogStep($"PresentationPlugin.UpdatePresentation: '{hostPath}' changes='{Truncate(changes, 120)}' contextText='{Truncate(contextText ?? "", 120)}' images={images!.Count}");
+            Log.LogStep($"PresentationTool.UpdatePresentation: '{hostPath}' changes='{Truncate(changes, 120)}' contextText='{Truncate(contextText ?? "", 120)}' images={images!.Count}");
             var verdict = AskChangesClear(changes, contextText);
             if (verdict == null) return "Error: the LLM returned no usable evaluation of the changes. Retry later.";
             if (!verdict.Clear)
                 return $"Error: the requested changes are not clear enough to apply. {Reasons(verdict.Explanation, "the changes do not say what to modify")}";
 
             var html = UpdateHtmlCore(currentHtml, changes, contextText, images);
-            if (html == null) return "Error: the LLM returned no usable HTML after 3 attempts. Retry later.";
+            if (html == null) return $"Error: the LLM returned no usable HTML after {MaxHtmlAttempts} attempts. Retry later.";
             html = EmbedImages(html, images);
             html = EmbedSvgIcons(html);
 
@@ -136,12 +147,71 @@ namespace AIOrchestrator.API
                 backup = CreateBackup(hostPath);
                 File.WriteAllText(hostPath, html);
             }
-            catch (Exception ex) { return $"Error: cannot apply the changes. {ex.Message}"; }
+            catch (Exception ex)
+            {
+                Log.LogStep($"PresentationTool.UpdatePresentation: failed '{hostPath}': {ex}");
+                return "Error: cannot apply the changes (write failed). Retry later.";
+            }
 
-            Log.LogStep($"PresentationPlugin.UpdatePresentation: '{hostPath}' updated ({html.Length} chars) backup='{backup ?? "(none)"}'");
+            Log.LogStep($"PresentationTool.UpdatePresentation: '{hostPath}' updated ({html.Length} chars) backup='{backup ?? "(none)"}'");
             return backup == null
                 ? $"Presentation updated at {SandboxPath.ToAgent(hostPath)}"
                 : $"Presentation updated at {SandboxPath.ToAgent(hostPath)}. Previous version backed up as '{SandboxPath.ToAgent(Path.Combine(Path.GetDirectoryName(hostPath)!, backup))}'.";
+        }
+
+        /// <summary>Reverts a presentation to a previously backed-up version: the current file is first saved as a new numbered backup (the restore itself is reversible), then the chosen backup replaces it. The original file name is derived from the backup name (e.g. "sales.001.bak" → "sales.html"). Call this after CreatePresentation/UpdatePresentation reported a backup (e.g. "Previous version backed up as 'sales.001.bak'").</summary>
+        /// <param name="backupFile">Optional backup file name or path (Unix-style, e.g. "sales.001.bak" or "/presentation/sales.001.bak"); the original file name is derived from it. When omitted, the most recent backup in the workspace is used.</param>
+        /// <returns>The restored .html path in workspace form, with the backup used and the new backup created, or an "Error: ..." message (no backup found, original not derivable or missing).</returns>
+        public string Restore(string? backupFile = null)
+        {
+            string? backupHost;
+            if (string.IsNullOrWhiteSpace(backupFile))
+            {
+                backupHost = Directory.GetFiles(Setup.DocumentsPath, "*.bak", SearchOption.AllDirectories)
+                    .OrderByDescending(File.GetLastWriteTimeUtc).FirstOrDefault();
+                if (backupHost == null) return "Error: no backup file found in the workspace. A backup is created when CreatePresentation/UpdatePresentation overwrites an existing file.";
+            }
+            else
+            {
+                try { backupHost = SandboxPath.Resolve(backupFile); }
+                catch (UnauthorizedAccessException ex) { return $"Error: {ex.Message}"; }
+                if (!File.Exists(backupHost))
+                {
+                    // bare file name: backups live next to their originals inside the workspace
+                    backupHost = Directory.GetFiles(Setup.DocumentsPath, Path.GetFileName(backupFile), SearchOption.AllDirectories)
+                        .FirstOrDefault();
+                    if (backupHost == null) return $"Error: backup file '{backupFile}' not found in the workspace.";
+                }
+            }
+
+            var dir = Path.GetDirectoryName(backupHost) ?? ".";
+            var baseName = Regex.Replace(Path.GetFileName(backupHost), @"\.\d{3}\.bak$|\.\d{8}_\d{6}\.bak$", "", RegexOptions.IgnoreCase);
+            if (baseName.Length == 0 || baseName == Path.GetFileName(backupHost))
+                return $"Error: cannot derive the original presentation from backup '{Path.GetFileName(backupHost)}' (expected a '.NNN.bak' name).";
+            var candidates = Directory.GetFiles(dir, baseName + ".*")
+                .Where(f => !f.EndsWith(".bak", StringComparison.OrdinalIgnoreCase)).ToList();
+            if (candidates.Count == 0)
+                return $"Error: the original presentation of '{Path.GetFileName(backupHost)}' is missing (no '{baseName}.*' file found next to the backup).";
+            if (candidates.Count > 1)
+                return $"Error: cannot determine the original presentation of '{Path.GetFileName(backupHost)}': multiple candidates ({string.Join(", ", candidates.Select(Path.GetFileName))}).";
+            var original = candidates[0];
+            if (!File.Exists(original)) return $"Error: original presentation '{SandboxPath.ToAgent(original)}' not found.";
+
+            string? newBackup = null;
+            try
+            {
+                newBackup = CreateBackup(original);
+                File.Copy(backupHost, original, overwrite: true);
+            }
+            catch (Exception ex)
+            {
+                Log.LogStep($"PresentationTool.Restore: failed '{backupHost}' → '{original}': {ex}");
+                return "Error: cannot restore the presentation (file copy failed).";
+            }
+            Log.LogStep($"PresentationTool.Restore: '{original}' restored from '{Path.GetFileName(backupHost)}' new-backup='{newBackup ?? "(none)"}'");
+            return newBackup == null
+                ? $"Presentation restored at {SandboxPath.ToAgent(original)} from backup '{SandboxPath.ToAgent(backupHost)}'."
+                : $"Presentation restored at {SandboxPath.ToAgent(original)} from backup '{SandboxPath.ToAgent(backupHost)}'. Previous version backed up as '{SandboxPath.ToAgent(Path.Combine(dir, newBackup))}'.";
         }
 
         // ---------- LLM ----------
@@ -173,10 +243,10 @@ namespace AIOrchestrator.API
             var missing = images.Where(i => !html.Contains(Path.GetFileName(i), StringComparison.OrdinalIgnoreCase)).ToList();
             if (missing.Count == 0)
             {
-                Log.LogStep("PresentationPlugin.CreatePresentation: all context images referenced in the first pass");
+                Log.LogStep("PresentationTool.CreatePresentation: all context images referenced in the first pass");
                 return html;
             }
-            Log.LogStep($"PresentationPlugin.CreatePresentation: forcing {missing.Count} missing image(s) via update flow: " +
+            Log.LogStep($"PresentationTool.CreatePresentation: forcing {missing.Count} missing image(s) via update flow: " +
                         string.Join(", ", missing.Select(Path.GetFileName)));
             const string changes = "These images are part of the presentation and should be inserted into the html page where most appropriate.";
             return UpdateHtmlCore(html, changes, null, images) ?? html;
@@ -191,7 +261,7 @@ namespace AIOrchestrator.API
             if (html == null) return null;
             var checkedHtml = GenerateHtml(BuildCheckFixPrompt(html));
             if (checkedHtml != null) html = checkedHtml;
-            else Log.LogStep("PresentationPlugin.UpdatePresentation: check&fix pass failed, keeping updated HTML");
+            else Log.LogStep("PresentationTool.UpdatePresentation: check&fix pass failed, keeping updated HTML");
             return html;
         }
 
@@ -225,8 +295,8 @@ namespace AIOrchestrator.API
                 forceJsonResponse: true);
             if (hResult != null || string.IsNullOrWhiteSpace(response)) return null;
             var opinion = TryParseJson<SufficiencyOpinion>(response);
-            if (opinion == null) Log.LogStep($"PresentationPlugin.AskOpinion: unparseable JSON response");
-            else Log.LogStep($"PresentationPlugin.AskOpinion: sufficient={opinion.Sufficient} descriptionClear={opinion.DescriptionClear}");
+            if (opinion == null) Log.LogStep($"PresentationTool.AskOpinion: unparseable JSON response");
+            else Log.LogStep($"PresentationTool.AskOpinion: sufficient={opinion.Sufficient} descriptionClear={opinion.DescriptionClear}");
             return opinion;
         }
 
@@ -254,8 +324,8 @@ namespace AIOrchestrator.API
                 forceJsonResponse: true);
             if (hResult != null || string.IsNullOrWhiteSpace(response)) return null;
             var verdict = TryParseJson<ChangeVerdict>(response);
-            if (verdict == null) Log.LogStep($"PresentationPlugin.AskChangesClear: unparseable JSON response");
-            else Log.LogStep($"PresentationPlugin.AskChangesClear: clear={verdict.Clear}");
+            if (verdict == null) Log.LogStep($"PresentationTool.AskChangesClear: unparseable JSON response");
+            else Log.LogStep($"PresentationTool.AskChangesClear: clear={verdict.Clear}");
             return verdict;
         }
 
@@ -265,29 +335,30 @@ namespace AIOrchestrator.API
             using var llm = new LLMUtility(Setup.ProviderConfig.ProviderName);
             for (int attempt = 1; attempt <= MaxHtmlAttempts; attempt++)
             {
-                Log.LogStep($"PresentationPlugin.GenerateHtml: attempt {attempt}/{MaxHtmlAttempts}");
+                Log.LogStep($"PresentationTool.GenerateHtml: attempt {attempt}/{MaxHtmlAttempts}");
                 var (response, hResult) = llm.SendQuery(prompt, useHistory: false, role: LLMUtility.SystemRole.DocumentPreparer);
                 if (hResult != null)
                 {
-                    Log.LogStep($"PresentationPlugin.GenerateHtml: LLM error hResult={hResult} — aborting");
-                    return null;
+                    Log.LogStep($"PresentationTool.GenerateHtml: LLM error hResult={hResult} on attempt {attempt} — retrying");
+                    continue;
                 }
                 if (string.IsNullOrWhiteSpace(response)) continue;
                 var html = response;
                 if (!Utility.RemoveFencesEncapsulationAndFixTrim(ref html, false))
                 {
-                    Log.LogStep($"PresentationPlugin.GenerateHtml: malformed fences on attempt {attempt}");
+                    Log.LogStep($"PresentationTool.GenerateHtml: malformed fences on attempt {attempt}");
                     continue;
                 }
                 if (IsValidHtml5(html, out var errors))
                 {
-                    Log.LogStep($"PresentationPlugin.GenerateHtml: valid HTML on attempt {attempt}");
+                    Log.LogStep($"PresentationTool.GenerateHtml: valid HTML on attempt {attempt}");
                     return html;
                 }
-                Log.LogStep($"PresentationPlugin.GenerateHtml: invalid HTML on attempt {attempt} ({errors.Count} errors: {string.Join(" | ", errors.Take(6))})");
+                Log.LogStep($"PresentationTool.GenerateHtml: invalid HTML on attempt {attempt} ({errors.Count} errors: {string.Join(" | ", errors.Take(6))})");
                 if (attempt == MaxHtmlAttempts) break;
                 var errorFeedback = string.Join("\n", errors.Take(8).Select(e => $"  - {e}"));
                 var missingEnd = !html.TrimEnd().EndsWith("</html>", StringComparison.OrdinalIgnoreCase);
+                var truncated = missingEnd && html.Length > 20000;
                 prompt = $"""
                     The previous HTML5 code you provided was not valid.
                     Here is the code that failed:
@@ -296,7 +367,7 @@ namespace AIOrchestrator.API
                     ```
                     Validation errors:
                     {errorFeedback}
-                    {(missingEnd ? "The document does not end with the closing </html> tag." : "")}
+                    {(truncated ? "The output was truncated by the output limit: the closing tags are missing at the end of the document. Produce a MORE COMPACT version that fits in the output limit: keep ALL the content but compress the markup (shorter inline styles, fewer wrapper elements). The output MUST end with the closing </html> tag." : missingEnd ? "The document does not end with the closing </html> tag." : "")}
 
                     Please fix ALL the errors above and provide a corrected, valid HTML5 version.
                     {OnlyOutputAnswer}
@@ -485,7 +556,7 @@ namespace AIOrchestrator.API
             }
             catch (Exception ex)
             {
-                Log.LogStep($"PresentationPlugin.InjectFixContentSizeScript: asset not injected: {ex.Message}");
+                Log.LogStep($"PresentationTool.InjectFixContentSizeScript: asset not injected: {ex.Message}");
                 return html;
             }
         }
@@ -704,13 +775,13 @@ namespace AIOrchestrator.API
 
         private static readonly Lazy<string> TemplateHtmlLazy = new(() =>
         {
-            var assembly = typeof(PresentationPlugin).Assembly;
+            var assembly = typeof(PresentationTool).Assembly;
             var name = assembly.GetManifestResourceNames()
                 .FirstOrDefault(n => n.EndsWith(".template.html", StringComparison.OrdinalIgnoreCase))
-                ?? throw new InvalidOperationException("Embedded resource 'Assets/template.html' not found in PresentationPlugin.");
+                ?? throw new InvalidOperationException("Embedded resource 'Assets/template.html' not found in PresentationTool.");
             using var stream = assembly.GetManifestResourceStream(name);
             if (stream == null)
-                throw new InvalidOperationException("Embedded resource 'Assets/template.html' not found in PresentationPlugin.");
+                throw new InvalidOperationException("Embedded resource 'Assets/template.html' not found in PresentationTool.");
             using var reader = new StreamReader(stream);
             return reader.ReadToEnd();
         }, LazyThreadSafetyMode.ExecutionAndPublication);

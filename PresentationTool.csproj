@@ -10,21 +10,21 @@
     <PlatformTarget>AnyCPU</PlatformTarget>
     <Papyrine_SponsorshipLicenseIgnored>true</Papyrine_SponsorshipLicenseIgnored>
     <Configurations>Debug;Release;Test</Configurations>
-    <PackageId>Graphene.PresentationPlugin</PackageId>
+    <PackageId>Graphene.PresentationTool</PackageId>
     <Version>$([System.DateTime]::Now.ToString("1.yy.MM.dd"))</Version>
     <Description>HTML presentation agent tool for AIOrchestrator: LLM-driven self-contained deck creation and fixing.</Description>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageLicenseFile>LICENSE.md</PackageLicenseFile>
     <PackageRequireLicenseAcceptance>False</PackageRequireLicenseAcceptance>
     <Copyright>Andrea Bruno</Copyright>
-    <RepositoryUrl>https://github.com/Graphene-Lab/PresentationPlugin</RepositoryUrl>
+    <RepositoryUrl>https://github.com/Graphene-Lab/PresentationTool</RepositoryUrl>
     <PackageTags>agent;tool;presentation;html;deck;llm;automation</PackageTags>
-    <DefaultItemExcludes>$(DefaultItemExcludes);PresentationPlugin.Harness\bin\**;PresentationPlugin.Harness\obj\**</DefaultItemExcludes>
+    <DefaultItemExcludes>$(DefaultItemExcludes);PresentationTool.Harness\bin\**;PresentationTool.Harness\obj\**</DefaultItemExcludes>
   </PropertyGroup>
   <!-- Runtime plugin identity: AIOrchestrator.PluginUpdater reads these assembly metadata
        attributes to know which NuGet package and version a loaded plugin comes from. -->
   <ItemGroup>
-    <AssemblyMetadata Include="NuGetPackageId" Value="Graphene.PresentationPlugin" />
+    <AssemblyMetadata Include="NuGetPackageId" Value="Graphene.PresentationTool" />
     <AssemblyMetadata Include="NuGetPackageVersion" Value="$(Version)" />
   </ItemGroup>
   <!-- Dual-reference pattern (as in AIOrchestrator): the local sibling project wins when
@@ -35,7 +35,7 @@
   </ItemGroup>
   <ItemGroup>
     <!-- Nested test projects must not compile into the library (AGENT_TOOLS_GUIDE Â§5). -->
-    <Compile Remove="PresentationPlugin.Harness\**\*.cs" />
+    <Compile Remove="PresentationTool.Harness\**\*.cs" />
   </ItemGroup>
   <ItemGroup>
     <!-- Deck template shipped inside the plugin assembly (read at runtime via TemplateHtml). -->
