@@ -143,7 +143,7 @@ namespace AIOrchestrator.API
             if (imagesError != null) return imagesError;
 
             Log.LogStep($"PresentationTool.UpdatePresentation: '{hostPath}' changes='{Truncate(changes, 120)}' contextText='{Truncate(contextText ?? "", 120)}' images={images!.Count}");
-            var verdict = AskChangesClear(changes, contextText);
+            var verdict = AskChangesClear(changes, contextText, images);
             if (verdict == null) return "Error: the LLM returned no usable evaluation of the changes. Retry later.";
             if (!verdict.Clear)
                 return $"Error: the requested changes are not clear enough to apply. {Reasons(verdict.Explanation, "the changes do not say what to modify")}";
@@ -172,28 +172,27 @@ namespace AIOrchestrator.API
         }
 
         /// <summary>Reverts a presentation to a previously backed-up version: the current file is first saved as a new numbered backup (the restore itself is reversible), then the chosen backup replaces it. The original file name is derived from the backup name (e.g. "sales.001.bak" → "sales.html"). Call this after CreatePresentation/UpdatePresentation reported a backup (e.g. "Previous version backed up as 'sales.001.bak'").</summary>
-        /// <param name="backupFile">Optional backup file name or path (Unix-style, e.g. "sales.001.bak" or "/presentation/sales.001.bak"); the original file name is derived from it. When omitted, the most recent backup in the workspace is used.</param>
-        /// <returns>The restored .html path in workspace form, with the backup used and the new backup created, or an "Error: ..." message (no backup found, original not derivable or missing).</returns>
+        /// <param name="backupFile">Optional backup file name or path (Unix-style, e.g. "sales.001.bak" or "/presentation/sales.001.bak"); the original file name is derived from it. When omitted, the ONLY backup in the workspace is used — when several documents have backups you MUST pass the backup file name of the presentation to restore.</param>
+        /// <returns>The restored .html path in workspace form, with the backup used and the new backup created, or an "Error: ..." message (no backup found, ambiguous backup set, original not derivable or missing).</returns>
         public string Restore(string? backupFile = null)
         {
             string? backupHost;
             if (string.IsNullOrWhiteSpace(backupFile))
             {
-                backupHost = Directory.GetFiles(Setup.DocumentsPath, "*.bak", SearchOption.AllDirectories)
-                    .OrderByDescending(File.GetLastWriteTimeUtc).FirstOrDefault();
-                if (backupHost == null) return "Error: no backup file found in the workspace. A backup is created when CreatePresentation/UpdatePresentation overwrites an existing file.";
+                var all = Directory.GetFiles(Setup.DocumentsPath, "*.bak", SearchOption.AllDirectories)
+                    .OrderByDescending(File.GetLastWriteTimeUtc).ToList();
+                if (all.Count == 0) return "Error: no backup file found in the workspace. A backup is created when CreatePresentation/UpdatePresentation overwrites an existing file.";
+                if (all.Count > 1)
+                    return "Error: several backups found in the workspace — pass the backup file name of the presentation to restore (e.g. 'sales.001.bak').";
+                backupHost = all[0];
             }
             else
             {
-                try { backupHost = SandboxPath.Resolve(backupFile); }
-                catch (UnauthorizedAccessException ex) { return $"Error: {ex.Message}"; }
-                if (!File.Exists(backupHost))
-                {
-                    // bare file name: backups live next to their originals inside the workspace
-                    backupHost = Directory.GetFiles(Setup.DocumentsPath, Path.GetFileName(backupFile), SearchOption.AllDirectories)
-                        .FirstOrDefault();
-                    if (backupHost == null) return $"Error: backup file '{backupFile}' not found in the workspace.";
-                }
+                var name = Path.GetFileName(backupFile.Replace('/', Path.DirectorySeparatorChar));
+                var hit = FindBackupByName(name) ?? (TryStripDocExt(name, out var bare) ? FindBackupByName(bare) : null);
+                if (hit == null)
+                    return $"Error: backup file '{backupFile}' not found in the workspace. Use the exact backup name reported by CreatePresentation/UpdatePresentation (e.g. 'sales.001.bak').";
+                backupHost = hit;
             }
 
             var dir = Path.GetDirectoryName(backupHost) ?? ".";
@@ -226,10 +225,33 @@ namespace AIOrchestrator.API
                 : $"Presentation restored at {SandboxPath.ToAgent(original)} from backup '{SandboxPath.ToAgent(backupHost)}'. Previous version backed up as '{SandboxPath.ToAgent(Path.Combine(dir, newBackup))}'.";
         }
 
+        /// <summary>Finds a backup file by name (Unix path or bare name searched across the workspace).</summary>
+        private static string? FindBackupByName(string name)
+        {
+            try
+            {
+                var p = SandboxPath.Resolve(name.Replace(Path.DirectorySeparatorChar, '/'));
+                if (File.Exists(p)) return p;
+            }
+            catch (UnauthorizedAccessException) { }
+            return Directory.GetFiles(Setup.DocumentsPath, name, SearchOption.AllDirectories).FirstOrDefault();
+        }
+
+        /// <summary>Tolerance for agent-guessed backup names: "sales.html.001.bak" → "sales.001.bak"
+        /// (CreateBackup drops the document extension, agents often keep it). True when a change was made.</summary>
+        private static bool TryStripDocExt(string name, out string bare)
+        {
+            bare = Regex.Replace(name, @"\.(?:docx|html)(?=\.\d{3}\.bak$|\.\d{8}_\d{6}\.bak$)", "", RegexOptions.IgnoreCase);
+            return bare != name;
+        }
+
         // ---------- LLM ----------
 
         /// <summary>Resolves the optional image files to host paths, validating existence and type.
-        /// Returns (images, null) on success or (null, error message) on the first bad entry.</summary>
+        /// A path that does not exist is retried as a bare file name (searched across the whole
+        /// workspace) — the same tolerance Restore applies to backup names: agents often pass just
+        /// the file name instead of the full Unix-style path. Returns (images, null) on success or
+        /// (null, error message) on the first bad entry.</summary>
         private static (List<string>? Images, string? Error) ResolveImages(string[]? imageFiles)
         {
             var images = new List<string>();
@@ -239,7 +261,14 @@ namespace AIOrchestrator.API
                 string imgHost;
                 try { imgHost = SandboxPath.Resolve(img); }
                 catch (UnauthorizedAccessException ex) { return (null, $"Error: {ex.Message}"); }
-                if (!File.Exists(imgHost)) return (null, $"Error: image file '{img}' not found in the workspace.");
+                if (!File.Exists(imgHost))
+                {
+                    // bare or mis-prefixed path: search the workspace by file name
+                    imgHost = Directory.GetFiles(Setup.DocumentsPath, Path.GetFileName(img), SearchOption.AllDirectories)
+                        .FirstOrDefault() ?? imgHost;
+                }
+                if (!File.Exists(imgHost))
+                    return (null, $"Error: image file '{img}' not found in the workspace. Pass the file's Unix-style workspace path (e.g. '/images/chart.png').");
                 if (MimeFor(imgHost) == null) return (null, $"Error: unsupported image type for '{img}'. Use png, jpg, gif, bmp, svg or webp.");
                 images.Add(imgHost);
             }
@@ -312,8 +341,11 @@ namespace AIOrchestrator.API
             return opinion;
         }
 
-        /// <summary>Asks the LLM (no history) whether the requested changes (and optional context) are clear enough to apply; returns the JSON verdict or null when the LLM fails.</summary>
-        private static ChangeVerdict? AskChangesClear(string changes, string? contextText)
+        /// <summary>Asks the LLM (no history) whether the requested changes (and optional context)
+        /// are clear enough to apply. The provided images are made known to the evaluator: a request
+        /// that refers to an available image (e.g. "add the logo") is clear — without this the gate
+        /// would reject it as ambiguous. Returns the JSON verdict or null when the LLM fails.</summary>
+        private static ChangeVerdict? AskChangesClear(string changes, string? contextText, List<string> images)
         {
             using var llm = new LLMUtility(Setup.ProviderConfig.ProviderName);
             var prompt = $$"""
@@ -324,6 +356,7 @@ namespace AIOrchestrator.API
                 - Decide sensible details yourself (e.g. which slide is "the first", which shade of blue, what "colors" means) — these do NOT make the request unclear.
                 - Reject ONLY when the changes are genuinely unusable: empty, meaningless or contradictory requests.
                 {{(!string.IsNullOrWhiteSpace(contextText) ? "Additional context: " + contextText : "")}}
+                {{(images.Count > 0 ? "Available images (the request may refer to them by file name): " + string.Join(", ", images.Select(Path.GetFileName)) : "")}}
 
                 Requested changes: {{changes}}
 
