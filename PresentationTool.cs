@@ -98,24 +98,24 @@ namespace AIOrchestrator.API
             html = InjectFixContentSizeScript(html);
             html = InjectAnimatedBackground(html, style);
 
-            string? backup = null;
+            string? versionId = null;
             try
             {
-                backup = File.Exists(hostPath) ? CreateBackup(hostPath) : null;
                 File.WriteAllText(hostPath, html);
+                versionId = GitSupport.Snapshot(hostPath, "PresentationTool create");
             }
             catch (Exception ex)
             {
                 Log.LogStep($"PresentationTool.CreatePresentation: failed '{hostPath}': {ex}");
                 return "Error: cannot save the presentation (write failed). Retry later.";
             }
-            Log.LogStep($"PresentationTool.CreatePresentation: wrote '{hostPath}' ({html.Length} chars) backup='{backup ?? "(none)"}'");
-            return backup == null
-                ? $"Presentation created at {SandboxPath.ToAgent(hostPath)}"
-                : $"Presentation created at {SandboxPath.ToAgent(hostPath)}. Previous version backed up as '{SandboxPath.ToAgent(Path.Combine(Path.GetDirectoryName(hostPath)!, backup))}'.";
+            Log.LogStep($"PresentationTool.CreatePresentation: wrote '{hostPath}' ({html.Length} chars) version='{versionId}'");
+            return versionId != null
+                ? $"Presentation created at {SandboxPath.ToAgent(hostPath)}. New version: {versionId}. (Rollback via GitTool.restore.)"
+                : $"Presentation created at {SandboxPath.ToAgent(hostPath)}.";
         }
 
-        /// <summary>Updates an existing HTML presentation on request (e.g. change a slide, recolor the deck, add or remove content): the current deck HTML is read, the requested changes are validated for clarity, the LLM produces the updated deck, and the file is overwritten in place. A numbered backup (.NNN.bak) is created before the file is overwritten.</summary>
+        /// <summary>Updates an existing HTML presentation on request (e.g. change a slide, recolor the deck, add or remove content): the current deck HTML is read, the requested changes are validated for clarity, the LLM produces the updated deck, and the file is overwritten in place. The new content becomes a new version (rollback via GitTool.restore).</summary>
         /// <param name="filePath">Path of the presentation to update (Unix-style, e.g. "/presentation/sales.html").</param>
         /// <param name="changes">The changes to apply (e.g. "shorten slide 3, change the colors, add a summary slide at the end").</param>
         /// <param name="contextText">Optional extra context the update must respect.</param>
@@ -153,11 +153,11 @@ namespace AIOrchestrator.API
             html = EmbedImages(html, images);
             html = EmbedSvgIcons(html);
 
-            string? backup = null;
+            string? versionId = null;
             try
             {
-                backup = CreateBackup(hostPath);
                 File.WriteAllText(hostPath, html);
+                versionId = GitSupport.Snapshot(hostPath, "PresentationTool update");
             }
             catch (Exception ex)
             {
@@ -165,84 +165,10 @@ namespace AIOrchestrator.API
                 return "Error: cannot apply the changes (write failed). Retry later.";
             }
 
-            Log.LogStep($"PresentationTool.UpdatePresentation: '{hostPath}' updated ({html.Length} chars) backup='{backup ?? "(none)"}'");
-            return backup == null
-                ? $"Presentation updated at {SandboxPath.ToAgent(hostPath)}"
-                : $"Presentation updated at {SandboxPath.ToAgent(hostPath)}. Previous version backed up as '{SandboxPath.ToAgent(Path.Combine(Path.GetDirectoryName(hostPath)!, backup))}'.";
-        }
-
-        /// <summary>Reverts a presentation to a previously backed-up version: the current file is first saved as a new numbered backup (the restore itself is reversible), then the chosen backup replaces it. The original file name is derived from the backup name (e.g. "sales.001.bak" → "sales.html"). Call this after CreatePresentation/UpdatePresentation reported a backup (e.g. "Previous version backed up as 'sales.001.bak'").</summary>
-        /// <param name="backupFile">Optional backup file name or path (Unix-style, e.g. "sales.001.bak" or "/presentation/sales.001.bak"); the original file name is derived from it. When omitted, the ONLY backup in the workspace is used — when several documents have backups you MUST pass the backup file name of the presentation to restore.</param>
-        /// <returns>The restored .html path in workspace form, with the backup used and the new backup created, or an "Error: ..." message (no backup found, ambiguous backup set, original not derivable or missing).</returns>
-        public string Restore(string? backupFile = null)
-        {
-            string? backupHost;
-            if (string.IsNullOrWhiteSpace(backupFile))
-            {
-                var all = Directory.GetFiles(Setup.DocumentsPath, "*.bak", SearchOption.AllDirectories)
-                    .OrderByDescending(File.GetLastWriteTimeUtc).ToList();
-                if (all.Count == 0) return "Error: no backup file found in the workspace. A backup is created when CreatePresentation/UpdatePresentation overwrites an existing file.";
-                if (all.Count > 1)
-                    return "Error: several backups found in the workspace — pass the backup file name of the presentation to restore (e.g. 'sales.001.bak').";
-                backupHost = all[0];
-            }
-            else
-            {
-                var name = Path.GetFileName(backupFile.Replace('/', Path.DirectorySeparatorChar));
-                var hit = FindBackupByName(name) ?? (TryStripDocExt(name, out var bare) ? FindBackupByName(bare) : null);
-                if (hit == null)
-                    return $"Error: backup file '{backupFile}' not found in the workspace. Use the exact backup name reported by CreatePresentation/UpdatePresentation (e.g. 'sales.001.bak').";
-                backupHost = hit;
-            }
-
-            var dir = Path.GetDirectoryName(backupHost) ?? ".";
-            var baseName = Regex.Replace(Path.GetFileName(backupHost), @"\.\d{3}\.bak$|\.\d{8}_\d{6}\.bak$", "", RegexOptions.IgnoreCase);
-            if (baseName.Length == 0 || baseName == Path.GetFileName(backupHost))
-                return $"Error: cannot derive the original presentation from backup '{Path.GetFileName(backupHost)}' (expected a '.NNN.bak' name).";
-            var candidates = Directory.GetFiles(dir, baseName + ".*")
-                .Where(f => !f.EndsWith(".bak", StringComparison.OrdinalIgnoreCase)).ToList();
-            if (candidates.Count == 0)
-                return $"Error: the original presentation of '{Path.GetFileName(backupHost)}' is missing (no '{baseName}.*' file found next to the backup).";
-            if (candidates.Count > 1)
-                return $"Error: cannot determine the original presentation of '{Path.GetFileName(backupHost)}': multiple candidates ({string.Join(", ", candidates.Select(Path.GetFileName))}).";
-            var original = candidates[0];
-            if (!File.Exists(original)) return $"Error: original presentation '{SandboxPath.ToAgent(original)}' not found.";
-
-            string? newBackup = null;
-            try
-            {
-                newBackup = CreateBackup(original);
-                File.Copy(backupHost, original, overwrite: true);
-            }
-            catch (Exception ex)
-            {
-                Log.LogStep($"PresentationTool.Restore: failed '{backupHost}' → '{original}': {ex}");
-                return "Error: cannot restore the presentation (file copy failed).";
-            }
-            Log.LogStep($"PresentationTool.Restore: '{original}' restored from '{Path.GetFileName(backupHost)}' new-backup='{newBackup ?? "(none)"}'");
-            return newBackup == null
-                ? $"Presentation restored at {SandboxPath.ToAgent(original)} from backup '{SandboxPath.ToAgent(backupHost)}'."
-                : $"Presentation restored at {SandboxPath.ToAgent(original)} from backup '{SandboxPath.ToAgent(backupHost)}'. Previous version backed up as '{SandboxPath.ToAgent(Path.Combine(dir, newBackup))}'.";
-        }
-
-        /// <summary>Finds a backup file by name (Unix path or bare name searched across the workspace).</summary>
-        private static string? FindBackupByName(string name)
-        {
-            try
-            {
-                var p = SandboxPath.Resolve(name.Replace(Path.DirectorySeparatorChar, '/'));
-                if (File.Exists(p)) return p;
-            }
-            catch (UnauthorizedAccessException) { }
-            return Directory.GetFiles(Setup.DocumentsPath, name, SearchOption.AllDirectories).FirstOrDefault();
-        }
-
-        /// <summary>Tolerance for agent-guessed backup names: "sales.html.001.bak" → "sales.001.bak"
-        /// (CreateBackup drops the document extension, agents often keep it). True when a change was made.</summary>
-        private static bool TryStripDocExt(string name, out string bare)
-        {
-            bare = Regex.Replace(name, @"\.(?:docx|html)(?=\.\d{3}\.bak$|\.\d{8}_\d{6}\.bak$)", "", RegexOptions.IgnoreCase);
-            return bare != name;
+            Log.LogStep($"PresentationTool.UpdatePresentation: '{hostPath}' updated ({html.Length} chars) version='{versionId}'");
+            return versionId != null
+                ? $"Presentation updated at {SandboxPath.ToAgent(hostPath)}. New version: {versionId}. (Rollback via GitTool.restore.)"
+                : $"Presentation updated at {SandboxPath.ToAgent(hostPath)}.";
         }
 
         // ---------- LLM ----------
@@ -696,25 +622,6 @@ namespace AIOrchestrator.API
         }
 
         // ---------- File helpers ----------
-
-        private static string? CreateBackup(string filePath)
-        {
-            if (!File.Exists(filePath)) return null;
-            var dir = Path.GetDirectoryName(filePath) ?? ".";
-            var name = Path.GetFileNameWithoutExtension(filePath);
-            for (int i = 1; i <= 9999; i++)
-            {
-                var backup = $"{name}.{i:D3}.bak";
-                if (!File.Exists(Path.Combine(dir, backup)))
-                {
-                    File.Copy(filePath, Path.Combine(dir, backup));
-                    return backup;
-                }
-            }
-            var fallback = $"{name}.{DateTime.Now:yyyyMMddHHmmss}.bak";
-            File.Copy(filePath, Path.Combine(dir, fallback));
-            return fallback;
-        }
 
         private static string ReadTextCapped(string path, int maxChars)
         {

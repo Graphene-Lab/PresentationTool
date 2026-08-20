@@ -232,7 +232,7 @@ static class Program
             return null;
         });
 
-        failures += Test("restore: named backup + swap on .html", () =>
+        failures += Test("versioning: snapshot + rollback on .html", () =>
         {
             var dir = Path.Combine(Path.GetTempPath(), "ptl-restore-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(dir);
@@ -242,13 +242,20 @@ static class Program
             {
                 var f = Path.Combine(dir, "deck.html");
                 File.WriteAllText(f, "<html><body><h1>V1</h1></body></html>");
-                File.Copy(f, Path.Combine(dir, "deck.001.bak"));
+                var v1 = GitSupport.Snapshot(f, "V1");
                 File.WriteAllText(f, "<html><body><h1>V2</h1></body></html>");
-                var r = new PresentationTool().Restore("deck.001.bak");
-                if (!r.StartsWith("Presentation restored at") || !r.Contains("deck.001.bak")) return $"restore result: {r}";
+                GitSupport.Snapshot(f, "V2");
+                var history = GitSupport.History(f);
+                if (history.Count != 2) return $"history count: {history.Count}";
+                // Pending edit (NOT yet versioned): the restore swap must capture it before overwriting.
+                File.WriteAllText(f, "<html><body><h1>V3</h1></body></html>");
+                var r = GitSupport.Restore(v1, f);
+                if (!r.StartsWith("Restored")) return $"restore result: {r}";
                 if (!File.ReadAllText(f).Contains("V1")) return "restored content is not V1";
-                if (!File.Exists(Path.Combine(dir, "deck.002.bak"))) return "swap backup deck.002.bak not created";
-                if (!File.ReadAllText(Path.Combine(dir, "deck.002.bak")).Contains("V2")) return "swap backup does not hold V2";
+                var v3 = GitSupport.History(f)[0].VersionId;   // the swap snapshot of the pending V3
+                if (GitSupport.History(f).Count != 3) return "history count after restore != 3";
+                GitSupport.Restore(v3, f);                      // rollback of the rollback
+                if (!File.ReadAllText(f).Contains("V3")) return "swap snapshot not restorable";
                 return null;
             }
             finally { Setup.DocumentsPath = saved; try { Directory.Delete(dir, true); } catch { } }
