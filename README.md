@@ -28,7 +28,9 @@ create_presentation(description, style?, outputTwoLetterLanguage?, contextText?,
 - `outputTwoLetterLanguage` (optional): two-letter language code (e.g. "en", "fr"); auto-detected from the context when omitted.
 - `contextText` / `contextFile` (optional): supporting material the deck content must be based on.
 - `imageFiles` (optional): workspace images embedded into the deck (Unix-style paths); the LLM
-  places each image, each is used at most once.
+  places each image, each is used at most once. Each image is shown to the LLM via the unified
+  `FileManager.GetFilesInfo` block: path + size + `Classification:` + YOLO `Metadata:` JSON
+  (created and embedded permanently in the image when absent).
 - `saveFullNameFile` (optional): output path/name (`.html`, Unix-style). Default:
   `/presentation/presentation_yyyyMMdd_HHmmss.html` in the workspace.
 

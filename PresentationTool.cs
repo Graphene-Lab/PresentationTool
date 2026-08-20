@@ -467,7 +467,7 @@ namespace AIOrchestrator.API
             {
                 sb.AppendLine();
                 sb.AppendLine("Available images (reference by file name only, e.g. <img src=\"chart.png\">):");
-                foreach (var img in images) sb.AppendLine("- " + DescribeImage(img));
+                sb.AppendLine(FileManager.GetFilesInfo(images.Select(SandboxPath.ToAgent)));
                 sb.AppendLine("- Use each image once");
                 sb.AppendLine();
             }
@@ -535,7 +535,7 @@ namespace AIOrchestrator.API
             {
                 sb.AppendLine();
                 sb.AppendLine("Available images (reference by file name only, e.g. <img src=\"chart.png\">):");
-                foreach (var img in images) sb.AppendLine("- " + DescribeImage(img));
+                sb.AppendLine(FileManager.GetFilesInfo(images.Select(SandboxPath.ToAgent)));
                 sb.AppendLine("- Use each image once");
                 sb.AppendLine();
             }
@@ -646,97 +646,6 @@ namespace AIOrchestrator.API
                 ".webp" => "image/webp",
                 _ => null
             };
-
-        /// <summary>One-line image description for the LLM prompt: file name, descriptive tag, workspace path, pixel size, and (for PNG) whether the background is transparent.</summary>
-        private static string DescribeImage(string img)
-        {
-            var sb = new StringBuilder(Path.GetFileName(img));
-            sb.Append(" (");
-            var tag = ImageTag(img);
-            if (tag.Length > 0) sb.Append("tag: ").Append(tag).Append(", ");
-            sb.Append("workspace path ").Append(SandboxPath.ToAgent(img));
-            var size = ImageSize(img);
-            if (size != null)
-                sb.Append(", ").Append(size.Value.Width).Append('x').Append(size.Value.Height).Append(" px");
-            if (img.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
-                sb.Append(PngHasTransparentBackground(img) ? ", transparent background" : ", opaque background");
-            sb.Append(')');
-            return sb.ToString();
-        }
-
-        /// <summary>Human-readable tag derived deterministically from the file name: splits PascalCase/CamelCase words and turns "-"/"_" separators into spaces, capitalizing each word (MilanoDuomo → "Milano Duomo", milano_duomo → "Milano Duomo"). Empty when the name has no letters.</summary>
-        private static string ImageTag(string path)
-        {
-            var name = Path.GetFileNameWithoutExtension(path);
-            name = Regex.Replace(name, @"[-_]+", " ");
-            name = Regex.Replace(name, @"(?<=[a-z0-9])(?=[A-Z])", " ");
-            return string.Join(" ", name.Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                .Select(w => char.ToUpperInvariant(w[0]) + w[1..]));
-        }
-
-        /// <summary>Pixel size read deterministically from the file header (ImageSharp Identify; SVG via its width/height/viewBox attributes). Null when the size cannot be determined.</summary>
-        private static (int Width, int Height)? ImageSize(string path)
-        {
-            if (path.EndsWith(".svg", StringComparison.OrdinalIgnoreCase))
-                return SvgSize(path);
-            try
-            {
-                using var fs = File.OpenRead(path);
-                var info = Image.Identify(fs);
-                return (info.Width, info.Height);
-            }
-            catch { return null; }
-        }
-
-        private static (int Width, int Height)? SvgSize(string path)
-        {
-            try
-            {
-                var text = File.ReadAllText(path, Encoding.UTF8);
-                var wm = Regex.Match(text, @"width\s*=\s*[""'](\d+(?:\.\d+)?)");
-                var hm = Regex.Match(text, @"height\s*=\s*[""'](\d+(?:\.\d+)?)");
-                if (wm.Success && hm.Success)
-                    return ((int)double.Parse(wm.Groups[1].Value, CultureInfo.InvariantCulture),
-                            (int)double.Parse(hm.Groups[1].Value, CultureInfo.InvariantCulture));
-                var vb = Regex.Match(text, @"viewBox\s*=\s*[""']\s*[-\d.]+\s+[-\d.]+\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)");
-                return vb.Success
-                    ? ((int)double.Parse(vb.Groups[1].Value, CultureInfo.InvariantCulture),
-                       (int)double.Parse(vb.Groups[2].Value, CultureInfo.InvariantCulture))
-                    : null;
-            }
-            catch { return null; }
-        }
-
-        /// <summary>Deterministic PNG header check: the image has transparency when the IHDR color type carries an alpha channel (4 or 6) or a tRNS chunk is present. No pixel decoding.</summary>
-        private static bool PngHasTransparentBackground(string path)
-        {
-            try
-            {
-                using var fs = File.OpenRead(path);
-                Span<byte> header = stackalloc byte[26];
-                if (fs.Read(header) < 26) return false;
-                if (header[0] != 0x89 || header[1] != 0x50 || header[2] != 0x4E || header[3] != 0x47) return false; // not a PNG
-                var colorType = header[25];
-                if (colorType is 4 or 6) return true;
-                if (colorType is 0 or 2 or 3)
-                {
-                    long pos = 8;
-                    Span<byte> chunkHead = stackalloc byte[8];
-                    while (pos + 8 <= fs.Length)
-                    {
-                        fs.Position = pos;
-                        if (fs.Read(chunkHead) < 8) break;
-                        var len = (chunkHead[0] << 24) | (chunkHead[1] << 16) | (chunkHead[2] << 8) | chunkHead[3];
-                        var type = Encoding.ASCII.GetString(chunkHead[4..8]);
-                        if (type == "tRNS") return true;
-                        if (type == "IEND") break;
-                        pos += 12 + len;
-                    }
-                }
-                return false;
-            }
-            catch { return false; }
-        }
 
         private static readonly HashSet<HtmlParseErrorCode> CriticalErrors = new()
         {
