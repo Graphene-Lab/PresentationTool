@@ -9,7 +9,7 @@ HTML file**: styling, animated background, charts, SVG icons and images are embe
 | Method | Purpose |
 |---|---|
 | `create_presentation` | Creates a new deck from a description (optional style, context text/file, image files, output path, language). |
-| `update_presentation` | Applies requested changes to an existing deck in place (numbered `.NNN.bak` backup before overwriting, backup name returned). |
+| `update_presentation` | Applies requested changes to an existing deck in place (the new content becomes a new version in the workspace git repo; rollback via `GitTool.restore`). |
 
 ## Usage
 
@@ -41,8 +41,9 @@ update_presentation(filePath, changes, contextText?, imageFiles?)
 ```
 
 Reads the current deck HTML, validates that the changes are clear, has the LLM apply them
-literally and overwrites the file in place. A numbered `.NNN.bak` backup is created before
-the deck is overwritten and its name is returned so the agent can restore it later.
+literally and overwrites the file in place. The new content becomes a new version in the
+workspace git repo — rollback via `GitTool.restore` (the deck is not open in a document tool,
+so `GitTool.restore` applies directly).
 
 ## Packaging
 
