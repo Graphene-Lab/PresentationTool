@@ -226,7 +226,7 @@ static class Program
 
         failures += Test("definitions: dynamic style list resolves", () =>
         {
-            var defs = Analyzer.GeToolDefinitions(typeof(PresentationTool));
+            var defs = Analyzer.GetToolDefinitions(typeof(PresentationTool));
             if (defs.Contains("[[available_styles]]")) return "placeholder not resolved";
             if (!defs.Contains("Cyberpunk Neon")) return "resolved style list missing an entry";
             return null;
