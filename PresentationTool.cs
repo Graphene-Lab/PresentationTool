@@ -36,7 +36,7 @@ namespace AIOrchestrator.API
         /// <param name="outputTwoLetterLanguage">Optional two-letter language code for the presentation (e.g. "en", "fr"); if omitted, the context data language is used.</param>
         /// <param name="contextText">Optional context text the deck content must be based on. (Mandatory if contextFile is missing)</param>
         /// <param name="contextFile">Optional workspace file read as content context (Unix-style path, e.g. "/docs/report.md"). (Mandatory if contextText is missing)</param>
-        /// <param name="imageFiles">Optional workspace image files embedded in the deck (Unix-style paths, e.g. "/images/chart.png"). The LLM places each image; each image is used at most once.</param>
+        /// <param name="imageFiles">Optional workspace image files to place in the deck (Unix-style paths, e.g. "/images/chart.png"). Each image is used at most once.</param>
         /// <param name="saveFullNameFile">Optional output file path and name (Unix-style, must end with ".html", e.g. "/out/sales.html"). Default: "/presentation/presentation_yyyyMMdd_HHmmss.html" in the workspace.</param>
         /// <returns>The generated .html path in workspace form, or an "Error: ..." message (missing input, unsupported image type, insufficient context, unclear description, LLM failure).</returns>
         public string CreatePresentation(string description, string? style = null, string? contextText = null, string? contextFile = null, string[]? imageFiles = null, string? saveFullNameFile = null, string? outputTwoLetterLanguage = null)
@@ -115,11 +115,11 @@ namespace AIOrchestrator.API
                 : $"Presentation created at {SandboxPath.ToAgent(hostPath)}.";
         }
 
-        /// <summary>Updates an existing HTML presentation on request (e.g. change a slide, recolor the deck, add or remove content): the current deck HTML is read, the requested changes are validated for clarity, the LLM produces the updated deck, and the file is overwritten in place. The new content becomes a new version (rollback via GitTool.restore).</summary>
+        /// <summary>Updates an existing presentation on request (e.g. change a slide, recolor the deck, add or remove content): the requested changes are applied and the file is overwritten in place. The new content becomes a new version (rollback via GitTool.restore).</summary>
         /// <param name="filePath">Path of the presentation to update (Unix-style, e.g. "/presentation/sales.html").</param>
         /// <param name="changes">The changes to apply (e.g. "shorten slide 3, change the colors, add a summary slide at the end").</param>
         /// <param name="contextText">Optional extra context the update must respect.</param>
-        /// <param name="imageFiles">Optional workspace image files the update must place in the deck (Unix-style paths, e.g. "/images/chart.png"), same semantics as in CreatePresentation: the LLM places each image, each image is used at most once, and they are embedded as data URIs.</param>
+        /// <param name="imageFiles">Optional workspace image files the update must place in the deck (Unix-style paths, e.g. "/images/chart.png"), same semantics as in CreatePresentation: each image is used at most once.</param>
         /// <returns>The updated .html path in workspace form (with the backup name), or an "Error: ..." message (missing input, unclear changes, LLM failure).</returns>
         public string UpdatePresentation(string filePath, string changes, string? contextText = null, string[]? imageFiles = null)
         {
