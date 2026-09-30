@@ -11,7 +11,9 @@ using UISupportGeneric;
 
 namespace AIOrchestrator.API
 {
-    /// <summary>Presentation operations for agent use: create and update a self-contained HTML deck from a description or change request. File paths are Unix-style, relative to the workspace root — never escape it.</summary>
+    /// <summary>Create and edit slide presentations as self-contained HTML decks (browser-viewable, not PowerPoint files).
+    /// Built from a description or a change request. For real .pptx files use OfficeTool. File paths are Unix-style, relative to
+    /// the workspace root — never escape it.</summary>
     public class PresentationTool : BaseAgentTool, IFileTool
     {
         private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
