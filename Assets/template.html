@@ -21,7 +21,12 @@
          }
 
          html {
-             font-size: 1.2vw
+             /* Base size tracks the deck frame, not just the window width: on a window
+                shorter than 16:9 the frame is height-bound, so the font must shrink with
+                it (2.13vh = 1.2% of the frame's height-bound width, 95vh*16/9) or the
+                slide text would overflow. On a 16:9-or-taller window this is identical
+                to the old 1.2vw. */
+             font-size: min(1.2vw, 2.13vh)
          }
 
          body {
@@ -59,7 +64,12 @@
          }
 
          .frame-16-9 {
-             width: 95%;
+             /* Fit the whole 16:9 slide inside the window on BOTH axes. The old
+                width:95% was width-only, so on a window shorter than 16:9 the frame
+                overflowed vertically and the top/bottom of every slide was cut off.
+                168.9vh = 95vh * 16/9 (the frame width that makes its height exactly
+                95vh); min() picks whichever axis binds first. */
+             width: min(95vw, 168.9vh);
              max-width: 95vw;
              aspect-ratio: 16/9;
              background: var(--color-slide-bg);
