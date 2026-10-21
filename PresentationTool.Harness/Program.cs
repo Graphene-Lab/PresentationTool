@@ -30,6 +30,7 @@ static class Program
         if (idx >= 0 && idx + 1 < args.Length) _providerName = args[idx + 1];
         if (Array.IndexOf(args, "--selftest") >= 0) return RunSelfTest();
         if (Array.IndexOf(args, "--previews") >= 0) return RunPreviews();
+        if (Array.IndexOf(args, "--examples") >= 0) return RunExamples(args);
         EnsureProvider();
 
         Log.IsEnabled = true;
@@ -309,14 +310,127 @@ static class Program
         return 0;
     }
 
+    /// <summary>Generates the four book example decks (pitch, sales, training, board review)
+    /// with the real tool and copies the filled HTML to the AgentBridge examples assets folder.
+    /// Invoked with `--examples`.</summary>
+    static int RunExamples(string[] args)
+    {
+        EnsureProvider();
+        Log.IsEnabled = true;
+        _workspace = Path.Combine(Path.GetTempPath(), "PresentationTool.Examples-workspace");
+        try { if (Directory.Exists(_workspace)) Directory.Delete(_workspace, recursive: true); } catch { }
+        Directory.CreateDirectory(_workspace);
+        Setup.SkipIndexingOnStartup = true;
+        Setup.DocumentsPath = _workspace;
+        Setup.ProviderConfig = ProviderConfigs.Get(_providerName);
+        StageIcons();
+        var outDir = @"C:\Users\andre\OneDrive\Sorgenti\AgentBridge\examples\_assets\pt-html";
+        Directory.CreateDirectory(outDir);
+        var tool = new PresentationTool();
+        var specs = new (string id, string desc, string style, string ctx)[]
+        {
+            ("pitch-deck",
+             "Create an investor pitch deck for 'GreenGrid', a startup that uses AI to cut energy use in commercial buildings. " +
+             "8 slides: cover, the problem, the solution, the market opportunity, the business model, traction so far, the team, the ask.",
+             "Cyberpunk Neon",
+             "GreenGrid was founded in 2023 in Milan by Marco Rossi (CEO, ex-Enel) and Anna Bianchi (CTO, ex-Politecnico AI lab). " +
+             "Problem: commercial buildings waste up to 35% of their energy on heating, cooling and lighting that runs when no one needs it. " +
+             "Solution: the GreenGrid platform connects to a building's sensors and HVAC and uses AI to cut energy use by up to 30% with no hardware replacement. " +
+             "Market: European building energy management is EUR 18B in 2026, growing 16% a year. " +
+             "Business model: SaaS priced per square metre, EUR 0.35/m2/month, plus a one-off setup fee. " +
+             "Traction: 28 paying buildings, EUR 480k ARR, 190% year over year growth, 96% customer retention. " +
+             "Team: 14 people across engineering, sales and customer success. " +
+             "The ask: EUR 3M seed to reach EUR 3M ARR in 24 months and expand to Germany and Spain."),
+
+            ("sales-presentation",
+             "Create a B2B sales presentation for 'CloudVault', a managed cloud backup service for small businesses. " +
+             "7 slides: cover, the data-loss problem, how CloudVault works, key features, return on investment, customer proof, next steps.",
+             "Modern",
+             "CloudVault is a fully managed cloud backup service for small and medium businesses. " +
+             "Problem: 60% of small businesses that lose their data for more than 10 days never reopen; ransomware attacks rose 40% last year. " +
+             "How it works: install an agent, it encrypts and backs up files, databases and servers automatically every hour, with one-click restore. " +
+             "Features: end-to-end encryption, 30-day version history, geo-redundant storage, 24/7 monitoring, guided restore. " +
+             "ROI: average customer saves EUR 12,000 a year versus running their own backup servers; full recovery in under 2 hours. " +
+             "Customer proof: 1,400 businesses protected, 4.8/5 satisfaction, case study of a 40-person accounting firm recovered from ransomware in 90 minutes. " +
+             "Pricing: from EUR 49/month per company. Next step: a free 30-day trial with a guided setup call."),
+
+            ("training-deck",
+             "Create an internal onboarding training deck for new customer-support agents at a software company. " +
+             "8 slides: welcome, our product in one page, our tone of voice, the ticket workflow, how to escalate, the tools we use, best practices, and a summary with key takeaways.",
+             "Minimalist White",
+             "Company: Nimbus, a project-management SaaS used by 8,000 teams. " +
+             "Product: Nimbus helps teams plan projects, assign tasks, track progress and share documents in one workspace. " +
+             "Tone of voice: friendly, clear, concise, never jargon; always thank the customer and confirm the fix. " +
+             "Ticket workflow: a ticket arrives, acknowledge within 15 minutes, diagnose, solve or escalate, confirm with the customer, close with a satisfaction survey. " +
+             "Escalation: if unresolved in 30 minutes or the customer is upset, escalate to a senior agent with a clear summary. " +
+             "Tools: the helpdesk console, the internal knowledge base, a status page, and a chat with the engineering team. " +
+             "Best practices: search the knowledge base first, never promise a date you cannot keep, log every step, aim for a CSAT of 4.5 or higher. " +
+             "Key takeaways: respond fast, stay friendly, document everything, escalate early."),
+
+            ("board-review",
+             "Create a quarterly board review deck for a SaaS company covering Q2 2026. " +
+             "8 slides: cover and agenda, key metrics, revenue detail, churn and retention, product updates, hiring and team, risks, and priorities for next quarter.",
+             "Bento Grid",
+             "Quarter: Q2 2026 (April to June). " +
+             "Key metrics: ARR EUR 4.2M (up 12% quarter over quarter), 620 customers, net revenue retention 112%, gross margin 78%. " +
+             "Revenue detail: new ARR EUR 620k, expansion ARR EUR 180k, contraction EUR 40k; average deal size EUR 8,400. " +
+             "Churn: gross logo churn 1.8% per quarter, down from 2.4%; main churn reason is small accounts consolidating tools. " +
+             "Product: shipped a mobile app, a reporting dashboard, and a public API; 30% of usage now mobile. " +
+             "Hiring: grew from 48 to 57 people; added 4 engineers and 3 customer-success managers; two senior roles still open. " +
+             "Risks: longer sales cycles in the enterprise segment, a competitor cutting prices, and key-person risk in the platform team. " +
+             "Priorities for Q3: launch the enterprise tier, close the two senior hires, reduce churn below 1.5%, and prepare the Series B."),
+        };
+        int ok = 0;
+        foreach (var s in specs)
+        {
+            var dest = Path.Combine(outDir, s.id + ".html");
+            if (File.Exists(dest) && Array.IndexOf(args, "--force") < 0)
+            { Console.WriteLine($"  SKIP {s.id} (already exists)"); ok++; continue; }
+            try
+            {
+                var r = tool.CreatePresentation(s.desc, style: s.style, contextText: s.ctx, saveFullNameFile: "/" + s.id + ".html");
+                var f = Path.Combine(_workspace, s.id + ".html");
+                if (File.Exists(f))
+                {
+                    File.Copy(f, dest, overwrite: true);
+                    Console.WriteLine($"  OK {s.id} ({s.style}) -> {outDir}");
+                    ok++;
+                }
+                else Console.WriteLine($"  FAIL {s.id}: {r}");
+            }
+            catch (Exception ex) { Console.WriteLine($"  CRASH {s.id}: {ex.GetType().Name}: {ex.Message}"); }
+        }
+        Console.WriteLine($"examples: {ok}/{specs.Length} decks written");
+        return ok == specs.Length ? 0 : 1;
+    }
+
     /// <summary>Ensures the requested provider exists. DeepSeekBridge is preconfigured;
     /// 'Ollama_Qwen' (local qwen3.5:4b) is registered at runtime when requested but absent,
     /// keeping providers.json untouched.</summary>
     static void EnsureProvider()
     {
         if (ProviderConfigs.TryGet(_providerName, out _)) return;
+        if (string.Equals(_providerName, "SuperFast_Flash", StringComparison.OrdinalIgnoreCase))
+        {
+            ProviderConfigs.Add(new ProviderConfig
+            {
+                ProviderName = "SuperFast_Flash",
+                Protocol = ProviderProtocol.OpenAI,
+                CacheType = ProviderCacheType.PrefixCache,
+                ModelName = "halogen-qwen3.8-flash-next",
+                ApiKey = Environment.GetEnvironmentVariable("SUPERFAST_FLASH_API_KEY") ?? "",
+                BaseAddress = new Uri("http://192.168.43.253:8741/"),
+                EndPoint = "v1/chat/completions",
+                NoJsonResponseFormat = true,
+                ExtraBody = new Dictionary<string, object> { ["reasoning_effort"] = "low" },
+                Timeout = TimeSpan.FromMinutes(30),
+                PauseBetweenRequests = TimeSpan.Zero,
+                ContextWindow = 262144,
+            }, persist: false);
+            return;
+        }
         if (!string.Equals(_providerName, "Ollama_Qwen", StringComparison.OrdinalIgnoreCase))
-            throw new ArgumentException($"Unknown provider '{_providerName}'. Use --provider with a configured provider or 'Ollama_Qwen'.");
+            throw new ArgumentException($"Unknown provider '{_providerName}'. Use --provider with a configured provider, 'Ollama_Qwen' or 'SuperFast_Flash'.");
         ProviderConfigs.Add(new ProviderConfig
         {
             ProviderName = "Ollama_Qwen",
