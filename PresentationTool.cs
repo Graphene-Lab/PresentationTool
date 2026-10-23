@@ -13,10 +13,17 @@ namespace AIOrchestrator.API
 {
     /// <summary>Create and edit slide presentations as self-contained HTML decks (browser-viewable, not PowerPoint files).
     /// Built from a description or a change request. For real .pptx files use OfficeTool. File paths are Unix-style, relative to
-    /// the workspace root — never escape it.</summary>
-    public class PresentationTool : BaseAgentTool, IFileTool
+    /// the workspace root — never escape it. Every saved deck is guaranteed to be a real slide show (one slide at a time,
+    /// prev/next buttons, counter, fits the window); when a local desktop session is available the finished deck is also
+    /// opened in the default browser so the user can watch it.</summary>
+    public class PresentationTool : BaseAgentTool, IFileTool, ILocalDesktopCapable
     {
         private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
+
+        /// <summary>Set by the orchestrator right after instantiating this tool (see <see cref="ILocalDesktopCapable"/>):
+        /// true only when a real local user sits at an interactive desktop session. It gates the "open the deck in the
+        /// browser" delivery — on a headless/server run no window may ever be raised.</summary>
+        public bool IsWatchAllowed { get; set; }
         private static readonly string[] Styles = ["Modern", "Vintage", "Minimalist White", "Brutalist", "Retro Pop", "Vaporwave", "Biophilic Design", "Cyberpunk Neon", "Glassmorphism", "Bento Grid", "Retro"];
         private const int MaxHtmlAttempts = 3;
         private const string OnlyOutputAnswer = "- Output only full HTML code. No opening or closing comments, no fences. [Output only]";
@@ -97,8 +104,11 @@ namespace AIOrchestrator.API
             html = EnsureImagesUsed(html, images); // re-check: later passes may have dropped the images
             html = EmbedImages(html, images);
             html = EmbedSvgIcons(html);
-            html = InjectFixContentSizeScript(html);
             html = InjectAnimatedBackground(html, style);
+            // Last step on purpose: no matter what the passes above did to the template (a styling pass
+            // that rewrites the page, a model that returns its own document instead of filling the
+            // template's .slide elements), what reaches the disk is always a real slide show.
+            html = EnsureDeckScaffold(html);
 
             string? versionId = null;
             try
@@ -112,6 +122,7 @@ namespace AIOrchestrator.API
                 return "Error: cannot save the presentation (write failed). Retry later.";
             }
             Log.LogStep($"PresentationTool.CreatePresentation: wrote '{hostPath}' ({html.Length} chars) version='{versionId}'");
+            OpenDeck(hostPath);
             return versionId != null
                 ? $"Presentation created at {SandboxPath.ToAgent(hostPath)}. New version: {versionId}. (Rollback via GitTool.restore.)"
                 : $"Presentation created at {SandboxPath.ToAgent(hostPath)}.";
@@ -154,6 +165,10 @@ namespace AIOrchestrator.API
             if (html == null) return $"Error: the LLM returned no usable HTML after {MaxHtmlAttempts} attempts. Retry later.";
             html = EmbedImages(html, images);
             html = EmbedSvgIcons(html);
+            // An update may legitimately rewrite the whole document ("replace the file with this
+            // markup"); the deck show must survive that, so the scaffold is re-guaranteed here too
+            // instead of only at creation time.
+            html = EnsureDeckScaffold(html);
 
             string? versionId = null;
             try
@@ -168,6 +183,7 @@ namespace AIOrchestrator.API
             }
 
             Log.LogStep($"PresentationTool.UpdatePresentation: '{hostPath}' updated ({html.Length} chars) version='{versionId}'");
+            OpenDeck(hostPath);
             return versionId != null
                 ? $"Presentation updated at {SandboxPath.ToAgent(hostPath)}. New version: {versionId}. (Rollback via GitTool.restore.)"
                 : $"Presentation updated at {SandboxPath.ToAgent(hostPath)}.";
@@ -418,7 +434,7 @@ namespace AIOrchestrator.API
             sb.AppendLine($"- Implement a \"{style.ToUpper()}\" design on the page");
             sb.AppendLine("- Add effects and transitions to slide elements");
             sb.AppendLine("- Use JavaScript to create amazing slide graphics.");
-            // sb.AppendLine("- Preserve the basic slide structure.");
+            sb.AppendLine("- MANDATORY, never trade it for looks: the output must stay a slide show — exactly one slide visible at a time inside the 16:9 frame (#presentation-frame / .frame-16-9), with the prev/next buttons, the slide counter and the navigation script still present and working. Do not turn the deck into a long scrolling page and do not remove the frame or the navigation.");
             sb.AppendLine("HTML code:");
             sb.AppendLine("```html");
             sb.AppendLine(currentHtml);
@@ -434,7 +450,7 @@ namespace AIOrchestrator.API
             sb.AppendLine("- There should be no small fonts.");
             sb.AppendLine("- Content must fit the slide container: (Verify the dimensions mathematically, and fix the content if it goes off the slide).");
             sb.AppendLine("- Check for both light and dark theme the correctness of the contrast between the text color and the background (fix if necessary).");
-            // sb.AppendLine("- Preserve the basic slide structure.");
+            sb.AppendLine("- Keep the deck a deck: the 16:9 frame (.frame-16-9 / #presentation-frame), the prev/next navigation buttons, the slide counter and the navigation script must survive your fix, and exactly one slide must carry the \"active\" class.");
             sb.AppendLine("HTML code:");
             sb.AppendLine("```html");
             sb.AppendLine(currentHtml);
@@ -452,6 +468,7 @@ namespace AIOrchestrator.API
             sb.AppendLine("- The exact strings in the changes request (titles, labels, text) MUST appear verbatim in the output — do not reword or replace them.");
             sb.AppendLine("- Change ONLY what the changes request; keep the rest of the content, wording and structure identical.");
             sb.AppendLine("- Keep the template's CSS classes, the language, navigation buttons and script unchanged; edit the .slide elements (and styles only if needed).");
+            sb.AppendLine("- Even when the request is \"replace the whole file with this markup\", the result must remain a slide show: slides as .slide elements inside the 16:9 frame, exactly one of them .active, prev/next buttons, counter and navigation script present. Never emit a page where the slides simply stack one after the other.");
             sb.AppendLine();
             sb.AppendLine("Current presentation HTML:");
             sb.AppendLine("```html");
@@ -519,9 +536,13 @@ namespace AIOrchestrator.API
 
         /// <summary>Injects the content-size fix script before &lt;/body&gt; (the asset is a complete
         /// HTML snippet, inserted as-is). Missing asset is a no-op: the enhancement is optional and
-        /// must never fail the deck creation.</summary>
+        /// must never fail the deck creation. Idempotent: a document that already carries it (or that
+        /// got the deck runtime below, which fits the slide by itself) is returned untouched, so the
+        /// two scalers can never stack on top of each other.</summary>
         internal static string InjectFixContentSizeScript(string html)
         {
+            if (html.Contains("const zoom", StringComparison.Ordinal) || html.Contains(DeckScaffoldMarker, StringComparison.Ordinal))
+                return html;
             try
             {
                 var script = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "assets", "fix-content-size.js"), Encoding.UTF8);
@@ -533,6 +554,258 @@ namespace AIOrchestrator.API
                 return html;
             }
         }
+
+        // ---------- slide-show guarantee (issue #106) ----------
+
+        /// <summary>Marker of the deck runtime, written both in the scaffold style block and in the
+        /// inlined script. It is what makes the whole post-processing idempotent: a document that
+        /// already carries it is never scaffolded (or scaled) a second time.</summary>
+        internal const string DeckScaffoldMarker = "AB-DECK-SCAFFOLD-V1";
+
+        /// <summary>Minimal geometry of a slide show, injected as the FIRST style block of the head so
+        /// everything the document itself declares (colours, typography, charts, tables) keeps winning.
+        /// Only the structure that must never be lost uses the <c>.frame-16-9 &gt; .slide</c> form, which
+        /// outranks a plain <c>.slide</c> rule and therefore cannot be pulled back into normal document
+        /// flow by the document's own CSS. The frame is sized on BOTH axes (168.9vh = 95vh × 16/9), so a
+        /// window shorter than 16:9 no longer cuts the top and bottom off every slide.</summary>
+        private const string DeckScaffoldCss = """
+<style>/* AB-DECK-SCAFFOLD-V1 */
+html{font-size:min(1.2vw,2.13vh);}
+body{display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;}
+.frame-16-9{width:min(95vw,168.9vh);max-width:95vw;aspect-ratio:16/9;background:var(--color-slide-bg,#ffffff40);position:relative;overflow:hidden;border-radius:1.8rem;box-shadow:0 2rem 4rem rgba(0,0,0,.6);margin:0;}
+.frame-16-9>.slide{position:absolute;left:0;top:0;margin:0;visibility:hidden;}
+.frame-16-9>.slide.active{visibility:visible;}
+.nav-btn{position:fixed;top:50%;transform:translateY(-50%);width:3rem;height:3rem;border:none;border-radius:50%;background:var(--color-controls-bg,rgba(0,0,0,.3));color:var(--color-controls-text,#fff);font-size:1.3rem;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:1000;}
+#prev-slide{left:1rem;}
+#next-slide{right:1rem;}
+#slide-counter{position:fixed;bottom:1rem;left:50%;transform:translateX(-50%);background:var(--color-controls-bg,rgba(0,0,0,.3));color:var(--color-controls-text,#fff);padding:.4rem .8rem;border-radius:1rem;font-size:1.3rem;z-index:1000;pointer-events:none;}
+</style>
+""";
+
+        /// <summary>The deck runtime (Assets/deck-scaffold.js) inlined into the saved file, so the deck
+        /// stays self-contained and needs no asset next to it when somebody opens it elsewhere.</summary>
+        private static readonly Lazy<string> DeckRuntimeJsLazy = new(() =>
+        {
+            var assembly = typeof(PresentationTool).Assembly;
+            var name = assembly.GetManifestResourceNames()
+                .FirstOrDefault(n => n.EndsWith(".deck-scaffold.js", StringComparison.OrdinalIgnoreCase));
+            if (name == null) throw new InvalidOperationException("Embedded resource 'Assets/deck-scaffold.js' not found in PresentationTool.");
+            using var stream = assembly.GetManifestResourceStream(name);
+            if (stream == null) throw new InvalidOperationException("Embedded resource 'Assets/deck-scaffold.js' not found in PresentationTool.");
+            using var reader = new StreamReader(stream);
+            return reader.ReadToEnd();
+        }, LazyThreadSafetyMode.ExecutionAndPublication);
+
+        internal static string DeckRuntimeJs => DeckRuntimeJsLazy.Value;
+
+        /// <summary>Guarantees that what is saved is a real slide show and not a long scrolling page
+        /// that merely looks like one (issue #106: a deck whose slides stack vertically and run off the
+        /// window is unreadable and cannot be presented). Behaviour:
+        /// - no <c>.slide</c> element at all → returned untouched, there is nothing to turn into a deck;
+        /// - a document that already carries the shipped template's frame, controls and navigation
+        ///   undamaged → untouched, only the content-size fix is ensured;
+        /// - anything else (the model returned its own document, a pass dropped the frame or the
+        ///   navigation, a "replace the whole file" update) → every top-level <c>.slide</c> element is
+        ///   moved, in document order, into one canonical 16:9 frame; the first slide becomes the active
+        ///   one; leftover/partial navigation buttons and nav scripts are replaced by the canonical
+        ///   ones; the document's own head (title, meta, styles) is preserved.
+        /// Never throws: on any surprise the original HTML is returned, because a readable but plain
+        /// document is better than no file at all.</summary>
+        internal static string EnsureDeckScaffold(string html)
+        {
+            if (string.IsNullOrWhiteSpace(html)) return html;
+            try
+            {
+                var doc = new HtmlDocument { OptionFixNestedTags = true };
+                doc.LoadHtml(html);
+                // Force the whole tree to materialize before touching it. LoadHtml keeps a command
+                // stream and builds nodes lazily: moving a node that still lives only in the stream
+                // emits it twice (its markup from the stream plus the moved node), which produced
+                // duplicate slides on the first run of these checks.
+                _ = doc.DocumentNode.OuterHtml;
+                var root = doc.DocumentNode;
+
+                var allSlides = root.Descendants()
+                    .Where(n => n.NodeType == HtmlNodeType.Element
+                                && (n.Name == "div" || n.Name == "section")
+                                && HasClass(n, "slide"))
+                    .ToList();
+                if (allSlides.Count == 0) return html;
+
+                var frame = root.Descendants().FirstOrDefault(n => n.NodeType == HtmlNodeType.Element
+                    && n.Name == "div"
+                    && (HasClass(n, "frame-16-9") || n.Id == "presentation-frame"));
+
+                if (frame != null && HasId(root, "prev-slide") && HasId(root, "next-slide") && HasDeckNavScript(root))
+                    return InjectFixContentSizeScript(html);
+
+                var body = root.SelectSingleNode("//body");
+                if (body == null)
+                {
+                    var htmlEl = root.SelectSingleNode("//html");
+                    body = doc.CreateElement("body");
+                    if (htmlEl != null)
+                    {
+                        foreach (var n in htmlEl.ChildNodes.Where(c => c.Name != "head").ToList())
+                            body.AppendChild(n);
+                        htmlEl.PrependChild(body);
+                        if (htmlEl.SelectSingleNode("head") == null)
+                            htmlEl.PrependChild(doc.CreateElement("head"));
+                    }
+                    else
+                    {
+                        foreach (var n in root.ChildNodes.ToList())
+                            body.AppendChild(n);
+                        root.AppendChild(body);
+                    }
+                }
+
+                // Slides nested inside another slide belong to that page and stay where they are.
+                var topSlides = allSlides.Where(s => !s.Ancestors().Any(a => HasClass(a, "slide"))).ToList();
+                if (topSlides.Count == 0) return html;
+
+                if (frame == null)
+                {
+                    frame = doc.CreateElement("div");
+                    frame.SetAttributeValue("class", "frame-16-9");
+                    frame.SetAttributeValue("id", "presentation-frame");
+                    // Inserted where the first slide was, so anything before it (an animated
+                    // background layer, a hero element) keeps its place in front of the deck.
+                    topSlides[0].ParentNode.InsertAfter(frame, topSlides[0]);
+                }
+                foreach (var s in topSlides) frame.AppendChild(s);   // moves each slide in, document order kept
+
+                for (int i = 0; i < topSlides.Count; i++)
+                {
+                    if (i == 0) AddClass(topSlides[i], "active");
+                    else RemoveClass(topSlides[i], "active");
+                }
+
+                // Drop leftover/partial deck navigation, then lay down the canonical one: an earlier
+                // pass that half-copied the template leaves buttons wired to nothing, which is worse
+                // than the clean controls installed here.
+                foreach (var n in root.Descendants().Where(x => x.NodeType == HtmlNodeType.Element
+                             && (x.Id == "prev-slide" || x.Id == "next-slide" || x.Id == "slide-counter")).ToList())
+                    n.ParentNode?.RemoveChild(n);
+                foreach (var s in root.Descendants().Where(x => x.Name == "script" && LooksLikeDeckNavScript(x.InnerText)).ToList())
+                    s.ParentNode?.RemoveChild(s);
+
+                var head = root.SelectSingleNode("//head");
+                if (head != null) InsertFragmentAtStart(head, DeckScaffoldCss);
+
+                AppendFragment(body, "<button id=\"prev-slide\" class=\"nav-btn\" aria-label=\"Previous slide\">&#8249;</button>"
+                    + "<button id=\"next-slide\" class=\"nav-btn\" aria-label=\"Next slide\">&#8250;</button>"
+                    + $"<div class=\"counter\" id=\"slide-counter\">1 / {topSlides.Count}</div>"
+                    + "<script>" + DeckRuntimeJs + "</script>");
+
+                Log.LogStep($"PresentationTool.EnsureDeckScaffold: rebuilt the slide show — {topSlides.Count} slide(s) moved into #presentation-frame with prev/next, counter and the deck runtime");
+                return doc.DocumentNode.OuterHtml;
+            }
+            catch (Exception ex)
+            {
+                Log.LogStep($"PresentationTool.EnsureDeckScaffold: left the HTML untouched ({ex.Message})");
+                return html;
+            }
+        }
+
+        private static bool HasClass(HtmlNode node, string cls)
+        {
+            var attr = node.GetAttributeValue("class", "");
+            if (string.IsNullOrWhiteSpace(attr)) return false;
+            return attr.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+                       .Any(c => string.Equals(c, cls, StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>Parses an HTML fragment and inserts its nodes at the very start of
+        /// <paramref name="parent"/>, keeping their order. Used for the scaffold style block, which has
+        /// to precede the document's own styles so that whatever the document declares still wins.</summary>
+        private static void InsertFragmentAtStart(HtmlNode parent, string htmlFragment)
+        {
+            var frag = new HtmlDocument();
+            frag.LoadHtml(htmlFragment);
+            _ = frag.DocumentNode.OuterHtml;   // materialize the fragment before its nodes are moved out
+            var nodes = frag.DocumentNode.ChildNodes.ToList();
+            for (int i = nodes.Count - 1; i >= 0; i--) parent.PrependChild(nodes[i]);
+        }
+
+        /// <summary>Parses an HTML fragment and appends its nodes to <paramref name="parent"/> in order.</summary>
+        private static void AppendFragment(HtmlNode parent, string htmlFragment)
+        {
+            var frag = new HtmlDocument();
+            frag.LoadHtml(htmlFragment);
+            _ = frag.DocumentNode.OuterHtml;   // materialize the fragment before its nodes are moved out
+            foreach (var n in frag.DocumentNode.ChildNodes.ToList())
+                parent.AppendChild(n);
+        }
+
+        private static void AddClass(HtmlNode node, string cls)
+        {
+            if (HasClass(node, cls)) return;
+            var attr = node.GetAttributeValue("class", "");
+            node.SetAttributeValue("class", string.IsNullOrWhiteSpace(attr) ? cls : attr.TrimEnd() + " " + cls);
+        }
+
+        private static void RemoveClass(HtmlNode node, string cls)
+        {
+            var attr = node.GetAttributeValue("class", "");
+            if (string.IsNullOrWhiteSpace(attr)) return;
+            var kept = attr.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+                           .Where(c => !string.Equals(c, cls, StringComparison.OrdinalIgnoreCase));
+            node.SetAttributeValue("class", string.Join(" ", kept));
+        }
+
+        private static bool HasId(HtmlNode root, string id) =>
+            root.Descendants().Any(n => n.NodeType == HtmlNodeType.Element && n.Id == id);
+
+        /// <summary>True when a document already carries a working slide-navigation script (the shipped
+        /// template's own or the runtime installed here). Matched on the markers that such a script must
+        /// contain; an ordinary chart/animation script never mentions the slide counter.</summary>
+        private static bool HasDeckNavScript(HtmlNode root) =>
+            root.Descendants().Any(n => n.Name == "script" && LooksLikeDeckNavScript(n.InnerText));
+
+        private static bool LooksLikeDeckNavScript(string script) =>
+            script.Contains(DeckScaffoldMarker, StringComparison.Ordinal)
+            || (script.Contains("slide-counter", StringComparison.OrdinalIgnoreCase)
+                && script.Contains(".slide", StringComparison.OrdinalIgnoreCase)
+                && script.Contains("keydown", StringComparison.OrdinalIgnoreCase));
+
+        /// <summary>Environment switch for the automatic "show me the deck" delivery: unset = on (the
+        /// person who asked for a presentation wants to see it), 0/false/off/no = never open — for batch
+        /// runs and automated tests where no window may appear.</summary>
+        internal const string DeckAutoOpenEnvVar = "AGENTBRIDGE_DECK_AUTOOPEN";
+
+        /// <summary>Opens the saved deck in the system default browser so the user sees the presentation
+        /// instead of having to go looking for the file (issue #106: "the generated file is not opened
+        /// after the request is completed"). Runs only when the orchestrator marked a real local desktop
+        /// session (<see cref="IsWatchAllowed"/>) and the switch was not turned off; called after the
+        /// file is written and versioned, and a failure to launch a browser never fails the operation.</summary>
+        private void OpenDeck(string hostPath)
+        {
+            if (!IsWatchAllowed || !DeckAutoOpen) return;
+            try
+            {
+                Log.LogStep($"PresentationTool.OpenDeck: opening '{hostPath}' in the default browser");
+                Process.Start(new ProcessStartInfo(hostPath) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                Log.LogStep($"PresentationTool.OpenDeck: could not open the browser ({ex.Message}); the deck is saved at '{hostPath}'");
+            }
+        }
+
+        private static bool DeckAutoOpen
+        {
+            get
+            {
+                var raw = Environment.GetEnvironmentVariable(DeckAutoOpenEnvVar)?.Trim();
+                if (string.IsNullOrEmpty(raw)) return true;
+                return !(raw.Equals("0", StringComparison.Ordinal)
+                    || raw.Equals("false", StringComparison.OrdinalIgnoreCase)
+                    || raw.Equals("off", StringComparison.OrdinalIgnoreCase)
+                    || raw.Equals("no", StringComparison.OrdinalIgnoreCase));
+            }
+        }
+
 
         /// <summary>Injects the animated background block (assets/&lt;style&gt;.bg) before &lt;/head&gt; so the
         /// deck body gets a style-matching animated background. The block is looked up by style name
@@ -551,9 +824,14 @@ namespace AIOrchestrator.API
             try { block = File.ReadAllText(file, Encoding.UTF8); }
             catch { return html; }
 
-            if (html.Contains("</head>", StringComparison.OrdinalIgnoreCase))
+            if (html.Contains("</head>", StringComparison.OrdinalIgnoreCase)
+                && html.Contains("--color-slide-bg", StringComparison.OrdinalIgnoreCase))
             {
-                // add 75% of transparency
+                // Only for a document built on the shipped template, which defines --color-slide-bg as
+                // its slide layer: making it 75% opaque lets the animated background show through the
+                // slide, which is the intended look. A document that does not define that variable must
+                // keep its own opaque slide background, or its text would sit straight on the moving
+                // background and become unreadable.
                 var addTransparent = "<style>.slide {background-color: color-mix(in srgb, var(--color-slide-bg) 75%, transparent) !important;}</style>";
                 html = html.Replace("</head>", addTransparent + "\n</head>", StringComparison.OrdinalIgnoreCase);
             }
@@ -627,6 +905,7 @@ namespace AIOrchestrator.API
 
         private static string ReadTextCapped(string path, int maxChars)
         {
+            if (!File.Exists(path)) return string.Empty;
             var text = File.ReadAllText(path);
             return text.Length <= maxChars ? text : text[..maxChars] + "\n…[truncated]";
         }
