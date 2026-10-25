@@ -16,6 +16,7 @@ namespace AIOrchestrator.API
     /// the workspace root — never escape it. Every saved deck is guaranteed to be a real slide show (one slide at a time,
     /// prev/next buttons, counter, fits the window); when a local desktop session is available the finished deck is also
     /// opened in the default browser so the user can watch it.</summary>
+    [ToolPurpose(ToolPurpose.Presentations)]
     public class PresentationTool : BaseAgentTool, IFileTool, ILocalDesktopCapable
     {
         private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
