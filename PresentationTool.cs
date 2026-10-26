@@ -3,7 +3,6 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Globalization;
 using HtmlAgilityPack;
-using SixLabors.ImageSharp;
 using System.Diagnostics;
 using UISupportGeneric;
 

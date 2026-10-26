@@ -63,7 +63,6 @@
   <ItemGroup>
     <PackageReference Include="Graphene.AIOrchestrator" Version="1.*" />
     <PackageReference Include="HtmlAgilityPack" Version="1.12.4" />
-    <PackageReference Include="SixLabors.ImageSharp" Version="3.*" />
   </ItemGroup>
   <ItemGroup>
     <None Update="LICENSE.md">
